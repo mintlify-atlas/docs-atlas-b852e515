@@ -1,0 +1,465 @@
+---
+title: "Admin API — operations, cache, and cluster management"
+description: "Admin endpoints for Kill Bill operators: inspect queue state, fix stuck transactions, invalidate caches, manage OSGI plugins, and export account data."
+---
+
+The Admin API provides operational endpoints for Kill Bill server operators. These endpoints let you inspect internal queue state, resolve stuck payment transactions, clear in-memory caches, manage OSGI plugins across a cluster, and export raw account data for debugging or migration. All admin endpoints require server-level credentials.
+
+<Warning>
+Admin endpoints bypass normal tenant-level business logic and operate directly on internal Kill Bill state. Use them only when you understand the consequences. Incorrect use of the payment state fix or cache invalidation endpoints can cause data inconsistencies.
+</Warning>
+
+---
+
+## Health and rotation
+
+### Put host into rotation
+
+Marks this Kill Bill node as healthy so that a load balancer can route traffic to it.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: ops" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/admin/healthcheck"
+```
+
+### Put host out of rotation
+
+Marks this Kill Bill node as unhealthy so that a load balancer stops routing new traffic to it. In-flight requests are not interrupted.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: ops" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/healthcheck"
+```
+
+Both return `204 No Content` on success.
+
+---
+
+## Queue inspection
+
+### Get queue entries
+
+Returns the contents of Kill Bill's internal notification queues and bus event queues. Use this to inspect pending events, in-progress work, or historical activity for a specific account or the whole tenant.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/admin/queues?withHistory=true&withInProcessing=true&withBusEvents=true&withNotifications=true"
+```
+
+To scope the query to a specific account:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/admin/queues?accountId=2ad52f53-85ae-408a-9879-32a7e59dd03d&withHistory=true"
+```
+
+<Expandable title="Query parameters">
+  <ParamField query="accountId" type="string">
+    UUID of an account. When provided, only events associated with this account are returned.
+  </ParamField>
+  <ParamField query="queueName" type="string">
+    Filter notifications by queue name. When omitted, all queues are included.
+  </ParamField>
+  <ParamField query="serviceName" type="string">
+    Filter notifications by service name. When omitted, all services are included.
+  </ParamField>
+  <ParamField query="withHistory" type="boolean">
+    Include historical (already processed) events. Defaults to `true`.
+  </ParamField>
+  <ParamField query="minDate" type="string">
+    ISO-8601 datetime lower bound for event filtering. Defaults to 2 days ago.
+  </ParamField>
+  <ParamField query="maxDate" type="string">
+    ISO-8601 datetime upper bound for event filtering. Defaults to 2 days from now.
+  </ParamField>
+  <ParamField query="withInProcessing" type="boolean">
+    Include events currently being processed. Defaults to `true`.
+  </ParamField>
+  <ParamField query="withBusEvents" type="boolean">
+    Include bus events in the response. Defaults to `true`.
+  </ParamField>
+  <ParamField query="withNotifications" type="boolean">
+    Include notification queue entries in the response. Defaults to `true`.
+  </ParamField>
+</Expandable>
+
+The response is a JSON object with two keys: `busEvents` (array) and `notifications` (array). The endpoint streams results as `application/octet-stream`.
+
+---
+
+## Payment transaction state fix
+
+### Fix a stuck payment transaction
+
+Forcibly updates the state of a payment and its associated transaction. Use this when a transaction is stuck in `PENDING` or `UNKNOWN` state — typically because the payment plugin returned an indeterminate result or crashed mid-flight.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: ops" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/admin/payments/8fe697d8-2cc3-4edd-a13b-3d1e7f1a5c2b/transactions/7da3c8b2-1bb4-3dcc-b12a-2c0e6e0a4b1a" \
+  -d '{
+    "lastSuccessPaymentState": "AUTH_SUCCESS",
+    "currentPaymentStateName": "AUTH_SUCCESS",
+    "transactionStatus": "SUCCESS"
+  }'
+```
+
+<Expandable title="Request body fields">
+  <ParamField body="transactionStatus" type="string" required>
+    The terminal status to set on the transaction. Valid values:
+
+    | Value | Meaning |
+    |---|---|
+    | `SUCCESS` | The transaction completed successfully |
+    | `FAILURE` | The transaction failed (e.g., declined) |
+    | `PLUGIN_FAILURE` | The plugin failed to process the transaction |
+  </ParamField>
+  <ParamField body="lastSuccessPaymentState" type="string">
+    The last known successful state name for the payment state machine (e.g., `AUTH_SUCCESS`, `CAPTURE_SUCCESS`). Used to reconstruct the payment's state history.
+  </ParamField>
+  <ParamField body="currentPaymentStateName" type="string">
+    The target state name for the payment state machine after this fix. Must be a valid state for the payment's plugin and transaction type.
+  </ParamField>
+</Expandable>
+
+Returns `204 No Content` on success.
+
+<Note>
+Before calling this endpoint, confirm the actual outcome of the transaction with your payment gateway. Setting the wrong status (e.g., marking a declined transaction as `SUCCESS`) will cause the invoice to be marked as paid when it is not.
+</Note>
+
+---
+
+## Invoice generation for parked accounts
+
+### Trigger invoice generation for parked accounts
+
+Kill Bill parks accounts (applies the `__PARK__` system tag) when invoice generation fails repeatedly. This endpoint iterates through all parked accounts and attempts to generate an invoice for each one. It streams results back as a JSON object mapping account UUIDs to their outcome.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: ops" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/admin/invoices?offset=0&limit=100"
+```
+
+**Response**
+
+```json
+{
+  "2ad52f53-85ae-408a-9879-32a7e59dd03d": "OK",
+  "7bc4d2e1-9f3a-4b8c-a1d2-3e4f5a6b7c8d": "INVOICE_NOTHING_TO_DO"
+}
+```
+
+Each key is an account UUID. `OK` means an invoice was successfully generated. Any other value is a Kill Bill error code explaining why generation failed.
+
+---
+
+## Cache management
+
+Kill Bill maintains several in-memory caches to reduce database load. Use these endpoints to invalidate caches after external data changes or when you need to force a fresh read.
+
+### Invalidate all caches
+
+Clears every cache in the dispatcher.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache"
+```
+
+To clear only a named cache, pass the `cacheName` query parameter:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache?cacheName=account-record-id"
+```
+
+### Invalidate per-account caches
+
+Clears the three account-level caches (`account-record-id`, `account-immutable`, and `account-bcd`) for a specific account. Use this after directly modifying account data outside of the Kill Bill API.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d"
+```
+
+### Invalidate per-tenant caches
+
+Clears all tenant-level caches (payment state machine config, catalog, overdue config, KV store, tenant config) for the current tenant identified by the request headers.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache/tenants"
+```
+
+All cache invalidation endpoints return `204 No Content` on success.
+
+---
+
+## Cluster node management
+
+### List all nodes
+
+Returns runtime information for every node in the Kill Bill cluster, including the Kill Bill version, component versions, and the state of each installed OSGI plugin.
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/nodesInfo"
+```
+
+**Response**
+
+```json
+[
+  {
+    "nodeName": "killbill-node-1",
+    "bootTime": "2024-01-15T08:00:00.000Z",
+    "lastUpdatedDate": "2024-01-15T10:00:00.000Z",
+    "kbVersion": "0.24.0",
+    "apiVersion": "0.54.0",
+    "pluginApiVersion": "0.26.0",
+    "commonVersion": "0.24.0",
+    "platformVersion": "0.40.0",
+    "pluginsInfo": [
+      {
+        "bundleSymbolicName": "org.kill-bill.billing.killbill-stripe",
+        "pluginKey": "stripe",
+        "pluginName": "killbill-stripe",
+        "version": "8.0.1",
+        "state": "RUNNING",
+        "isSelectedForStart": true,
+        "services": [
+          {
+            "serviceTypeName": "org.killbill.billing.payment.plugin.api.PaymentPluginApi",
+            "registrationName": "killbill-stripe"
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+<Expandable title="Node info response fields">
+  <ResponseField name="nodeName" type="string">
+    Hostname or identifier of the cluster node.
+  </ResponseField>
+  <ResponseField name="bootTime" type="string">
+    ISO-8601 timestamp when this node was started.
+  </ResponseField>
+  <ResponseField name="lastUpdatedDate" type="string">
+    ISO-8601 timestamp of the last node info update.
+  </ResponseField>
+  <ResponseField name="kbVersion" type="string">
+    Kill Bill core version running on this node.
+  </ResponseField>
+  <ResponseField name="apiVersion" type="string">
+    Kill Bill API version.
+  </ResponseField>
+  <ResponseField name="pluginApiVersion" type="string">
+    Kill Bill Plugin API version.
+  </ResponseField>
+  <ResponseField name="commonVersion" type="string">
+    Kill Bill commons library version.
+  </ResponseField>
+  <ResponseField name="platformVersion" type="string">
+    Kill Bill platform (OSGi container) version.
+  </ResponseField>
+  <ResponseField name="pluginsInfo" type="array">
+    List of installed OSGI plugins and their states.
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Plugin info fields">
+  <ResponseField name="bundleSymbolicName" type="string">
+    OSGi bundle symbolic name.
+  </ResponseField>
+  <ResponseField name="pluginKey" type="string">
+    Short identifier used when referencing the plugin in commands (e.g., `stripe`).
+  </ResponseField>
+  <ResponseField name="pluginName" type="string">
+    Full plugin name.
+  </ResponseField>
+  <ResponseField name="version" type="string">
+    Installed plugin version.
+  </ResponseField>
+  <ResponseField name="state" type="string">
+    Current plugin state: `RUNNING`, `STOPPED`, `DISABLED`, `UNINSTALLED`, `UNKNOWN`, or `INITIALIZING`.
+  </ResponseField>
+  <ResponseField name="isSelectedForStart" type="boolean">
+    Whether this plugin version is configured to start automatically.
+  </ResponseField>
+  <ResponseField name="services" type="array">
+    OSGi services registered by this plugin (e.g., payment plugin API, notification plugin API).
+  </ResponseField>
+</Expandable>
+
+### Send a node command
+
+Broadcasts a command to all cluster nodes (or only the local node) to install, start, stop, or uninstall an OSGI plugin. Kill Bill uses the Kill Bill Package Manager (KPM) plugin to handle `INSTALL_PLUGIN` commands.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: ops" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/nodesInfo?localNodeOnly=false" \
+  -d '{
+    "isSystemCommandType": true,
+    "nodeCommandType": "START_PLUGIN",
+    "nodeCommandProperties": [
+      {"key": "pluginKey", "value": "stripe"},
+      {"key": "pluginName", "value": "killbill-stripe"},
+      {"key": "pluginVersion", "value": "8.0.1"}
+    ]
+  }'
+```
+
+<Expandable title="Request body fields">
+  <ParamField body="isSystemCommandType" type="boolean" required>
+    Set to `true` for built-in platform commands (plugin management). Set to `false` for custom plugin-specific commands.
+  </ParamField>
+  <ParamField body="nodeCommandType" type="string" required>
+    The command to execute. Built-in system commands:
+
+    | Command | Description |
+    |---|---|
+    | `INSTALL_PLUGIN` | Download and install a plugin via KPM |
+    | `START_PLUGIN` | Start an already-installed plugin |
+    | `STOP_PLUGIN` | Stop a running plugin |
+    | `UNINSTALL_PLUGIN` | Remove a plugin from the node |
+  </ParamField>
+  <ParamField body="nodeCommandProperties" type="array" required>
+    Key-value pairs that provide context for the command. For plugin commands, include `pluginKey`, `pluginName`, and `pluginVersion`.
+  </ParamField>
+</Expandable>
+
+<ParamField query="localNodeOnly" type="boolean">
+  When `true`, the command is sent only to the node receiving the request. When `false` (default), it is broadcast to all nodes via the Kill Bill bus.
+</ParamField>
+
+Returns `202 Accepted` on success. The command is delivered asynchronously.
+
+<Tabs>
+  <Tab title="Install plugin">
+    ```bash
+    curl -v -u admin:password \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: ops" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/nodesInfo" \
+      -d '{
+        "isSystemCommandType": true,
+        "nodeCommandType": "INSTALL_PLUGIN",
+        "nodeCommandProperties": [
+          {"key": "pluginKey", "value": "stripe"},
+          {"key": "pluginVersion", "value": "8.0.1"}
+        ]
+      }'
+    ```
+  </Tab>
+  <Tab title="Stop plugin">
+    ```bash
+    curl -v -u admin:password \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: ops" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/nodesInfo" \
+      -d '{
+        "isSystemCommandType": true,
+        "nodeCommandType": "STOP_PLUGIN",
+        "nodeCommandProperties": [
+          {"key": "pluginKey", "value": "stripe"},
+          {"key": "pluginName", "value": "killbill-stripe"},
+          {"key": "pluginVersion", "value": "8.0.1"}
+        ]
+      }'
+    ```
+  </Tab>
+  <Tab title="Uninstall plugin">
+    ```bash
+    curl -v -u admin:password \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: ops" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/nodesInfo" \
+      -d '{
+        "isSystemCommandType": true,
+        "nodeCommandType": "UNINSTALL_PLUGIN",
+        "nodeCommandProperties": [
+          {"key": "pluginKey", "value": "stripe"},
+          {"key": "pluginName", "value": "killbill-stripe"},
+          {"key": "pluginVersion", "value": "8.0.1"}
+        ]
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Account data export
+
+### Export raw account data
+
+Exports all database rows associated with a given account as a CSV stream. The export includes every table that has a row referencing this account: subscriptions, invoices, payments, custom fields, tags, audit logs, and more. Use this for debugging, migration, or compliance data extraction.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: ops" \
+  "http://127.0.0.1:8080/1.0/kb/export/2ad52f53-85ae-408a-9879-32a7e59dd03d" \
+  -o account-export.csv
+```
+
+The response is streamed as `application/octet-stream`. Each section of the CSV is prefixed with the table name. There is no JSON wrapper — this is a raw data dump intended for offline analysis.
+
+<Info>
+For large accounts the export can be several megabytes. The response is streamed, so you should write it directly to a file rather than loading it into memory.
+</Info>

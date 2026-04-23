@@ -1,0 +1,256 @@
+---
+title: "Credits API — account credit management"
+description: "Create account-level credits and retrieve credit items in Kill Bill; understand how the credit balance adjustment (CBA) mechanism works."
+---
+
+A credit in Kill Bill adds a positive balance to an account's credit pool. This pool is called the **Credit Balance Adjustment** (CBA). Kill Bill automatically applies the CBA to future invoices, reducing the amount the customer owes. When an invoice is generated for an account that has a positive CBA, a `CBA_ADJ` line item is added to the invoice to consume part or all of the credit.
+
+Credits are represented internally as `CBA_ADJ`-type invoice items attached to an invoice. They can be applied to a specific invoice or added to a general account-level credit pool.
+
+<Info>
+  Credits are additive and never expire by default. The CBA is applied greedily against the oldest outstanding invoices first during the next invoice generation cycle, or when you call the [rebalance endpoint](/api-reference/accounts#rebalance-credit-balance) manually.
+</Info>
+
+---
+
+## Credit vs. item adjustment
+
+There are two ways to reduce what a customer owes:
+
+| Mechanism | API | Effect |
+|---|---|---|
+| **Credit** | `POST /1.0/kb/credits` | Adds to the account-wide CBA pool. Automatically applied to future invoices. |
+| **Item adjustment** | `POST /1.0/kb/invoices/{invoiceId}` | Directly reduces a specific line item on a specific invoice. Does not affect the CBA pool. |
+
+Use a credit when you want to pre-load a customer with a balance that will be automatically deducted from upcoming charges. Use an item adjustment when you want to partially or fully cancel a specific charge on a past or current invoice.
+
+---
+
+## Create credit
+
+<br />
+
+`POST /1.0/kb/credits`
+
+Creates one or more credit items. The credits are attached to an invoice — either a specific existing invoice or a new invoice created automatically.
+
+The request body is an **array** of credit item objects. All credits in a single request must belong to the same account.
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date or date-time on which to apply the credit. Defaults to today in the account's time zone.
+</ParamField>
+
+<ParamField query="autoCommit" type="boolean" default="false">
+  When `true`, the invoice containing the credit is immediately committed (moved from `DRAFT` to `COMMITTED` status). When `false`, the invoice remains in `DRAFT` and must be committed separately before it triggers payment processing.
+</ParamField>
+
+### Request body
+
+An array of credit objects. At minimum, each object must include `accountId` and `amount`.
+
+<ParamField body="[].accountId" type="string" required>
+  UUID of the account to credit.
+</ParamField>
+
+<ParamField body="[].amount" type="number" required>
+  Credit amount. Must be a positive number.
+</ParamField>
+
+<ParamField body="[].currency" type="string">
+  ISO 4217 currency code. Must match the account's currency. Defaults to the account's currency when omitted.
+</ParamField>
+
+<ParamField body="[].invoiceId" type="string">
+  UUID of an existing invoice to attach the credit to. When omitted, Kill Bill creates a new invoice to hold the credit.
+</ParamField>
+
+<ParamField body="[].description" type="string">
+  Human-readable description of the credit (e.g., `"Promotional credit"`, `"Service disruption compensation"`).
+</ParamField>
+
+<ParamField body="[].itemDetails" type="string">
+  Additional free-text details for the credit item.
+</ParamField>
+
+### Response
+
+`200 OK` — Returns an array of created credit items ([InvoiceItem objects](#credit-item-object)).
+
+<Note>
+  The response status is `200 OK` rather than `201 Created` because Kill Bill may return existing credit items when `autoCommit=false` and the credits land on an existing draft invoice.
+</Note>
+
+```bash Example — credit an account
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '[
+    {
+      "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+      "amount": 50.00,
+      "currency": "USD",
+      "description": "Promotional credit — Q1 2025"
+    }
+  ]' \
+  "http://localhost:8080/1.0/kb/credits?autoCommit=true"
+```
+
+```bash Example — credit toward a specific invoice
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '[
+    {
+      "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+      "invoiceId": "b7f9a12d-3c2e-4f1a-8b9c-5d6e7f8a9b0c",
+      "amount": 25.00,
+      "currency": "USD",
+      "description": "Partial credit for invoice INV-1042"
+    }
+  ]' \
+  "http://localhost:8080/1.0/kb/credits?autoCommit=true"
+```
+
+---
+
+## Get credit by UUID
+
+<br />
+
+`GET /1.0/kb/credits/{creditId}`
+
+Retrieves a single credit item by its UUID. The `creditId` is the `invoiceItemId` of the `CBA_ADJ` item returned when the credit was created.
+
+### Path parameters
+
+<ParamField path="creditId" type="string" required>
+  The Kill Bill UUID of the credit (invoice item) to retrieve.
+</ParamField>
+
+### Response
+
+Returns a [Credit item object](#credit-item-object).
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://localhost:8080/1.0/kb/credits/c9d8e7f6-5a4b-3c2d-1e0f-9a8b7c6d5e4f"
+```
+
+---
+
+## Rebalance credit balance
+
+<br />
+
+`PUT /1.0/kb/accounts/{accountId}/cbaRebalancing`
+
+Applies any unused credit balance against existing unpaid invoices. Kill Bill performs this automatically during invoice generation, but this endpoint lets you trigger the rebalancing on demand — for example, after manually adding a credit or after resolving a payment failure.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  UUID of the account whose credit balance should be rebalanced.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X PUT \
+  "http://localhost:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/cbaRebalancing"
+```
+
+---
+
+## How the CBA mechanism works
+
+When you create a credit, Kill Bill creates a `CBA_ADJ` invoice item with a **negative** amount on an invoice. A negative amount on a `CBA_ADJ` item means the account has a credit it can spend.
+
+The next time an invoice is generated for that account (either automatically or via the [trigger invoice endpoint](/api-reference/invoices#trigger-invoice-generation)):
+
+1. Kill Bill calculates the total due for the period.
+2. If the account has an available CBA balance, Kill Bill adds a positive `CBA_ADJ` item to the new invoice to consume the credit.
+3. The `balance` field on the new invoice reflects the net amount after the credit is applied.
+
+If the CBA exceeds the invoice total, the remainder stays in the pool for future invoices. The account's current CBA balance is available in the [get account](/api-reference/accounts#get-account-by-uuid) response when you pass `accountWithBalanceAndCBA=true`.
+
+<Tip>
+  To see the total unused credit balance on an account without fetching the full invoice history, call `GET /1.0/kb/accounts/{accountId}?accountWithBalanceAndCBA=true` and read the `accountCBA` field.
+</Tip>
+
+---
+
+## Credit item object
+
+Credits are returned as `InvoiceItem` objects with `itemType` set to `CBA_ADJ`.
+
+<ResponseField name="invoiceItemId" type="string">
+  Kill Bill UUID for this credit item. Use this as the `creditId` when calling `GET /1.0/kb/credits/{creditId}`.
+</ResponseField>
+
+<ResponseField name="invoiceId" type="string">
+  UUID of the invoice that contains this credit item.
+</ResponseField>
+
+<ResponseField name="accountId" type="string">
+  UUID of the account that received the credit.
+</ResponseField>
+
+<ResponseField name="itemType" type="string">
+  Always `CBA_ADJ` for credit items created via this API.
+</ResponseField>
+
+<ResponseField name="amount" type="number">
+  Credit amount. Negative values indicate credit added to the pool; positive values indicate credit consumed against an invoice.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  ISO 4217 currency code.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Human-readable description provided at creation time.
+</ResponseField>
+
+<ResponseField name="startDate" type="string">
+  ISO 8601 local date on which the credit was applied (`YYYY-MM-DD`).
+</ResponseField>
+
+<ResponseField name="linkedInvoiceItemId" type="string">
+  When this `CBA_ADJ` is consuming a previously created credit, this field points to the UUID of the original credit item that funded it.
+</ResponseField>
+
+### Example credit item response
+
+```json
+{
+  "invoiceItemId": "c9d8e7f6-5a4b-3c2d-1e0f-9a8b7c6d5e4f",
+  "invoiceId": "b7f9a12d-3c2e-4f1a-8b9c-5d6e7f8a9b0c",
+  "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+  "itemType": "CBA_ADJ",
+  "description": "Promotional credit — Q1 2025",
+  "startDate": "2025-01-15",
+  "amount": -50.00,
+  "currency": "USD"
+}
+```

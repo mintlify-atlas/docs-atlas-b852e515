@@ -1,97 +1,64 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Kill Bill: Open-Source Subscription Billing & Payments"
+description: "Kill Bill is the leading open-source subscription billing and payments platform. Self-host your billing infrastructure with full control over your data."
 ---
 
-## Setting up
+Kill Bill is a battle-tested, open-source subscription billing and payments platform trusted by SaaS companies and e-commerce businesses for over a decade. It gives you a complete API-driven billing engine — subscriptions, invoices, payments, usage metering, and dunning — without vendor lock-in.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Deploy Kill Bill and make your first API call in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core Concepts" icon="book" href="/concepts">
+    Understand accounts, catalogs, subscriptions, and invoices.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="API Reference" icon="code" href="/api-reference/overview">
+    Explore the full REST API with request and response examples.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Product Catalog" icon="tag" href="/guides/catalog">
+    Model your products, plans, and pricing in the Kill Bill catalog.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can build
 
-Everything you need to create world-class documentation.
+Kill Bill handles the full billing lifecycle so you can focus on your product. Use the REST API to integrate billing directly into your application.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Subscription Management" icon="arrows-rotate" href="/guides/subscriptions">
+    Create, change, cancel, pause, and resume subscriptions with trial periods and add-ons.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Automated Invoicing" icon="file-invoice" href="/guides/invoicing">
+    Automatically generate invoices on billing events, with support for prorations and adjustments.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Payment Processing" icon="credit-card" href="/guides/payments">
+    Process payments via any gateway plugin with retries, chargebacks, and refunds.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Usage-Based Billing" icon="chart-line" href="/guides/usage-billing">
+    Record metered usage and bill customers based on consumption with tiered pricing.
   </Card>
-</Columns>
+  <Card title="Dunning & Collections" icon="bell" href="/guides/overdue">
+    Automate overdue notifications and account blocking with a configurable state machine.
+  </Card>
+  <Card title="Multi-Tenancy" icon="building" href="/guides/multi-tenancy">
+    Run multiple isolated tenants on a single Kill Bill instance, each with their own catalog and config.
+  </Card>
+</CardGroup>
 
-## Need inspiration?
+## Get started in 3 steps
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Deploy Kill Bill">
+    Run Kill Bill on AWS with the one-click deployer, or start locally with Docker. The server exposes its REST API at `http://localhost:8080`.
+  </Step>
+  <Step title="Create your first tenant and catalog">
+    Set up a tenant with API key and secret, then upload a product catalog defining your plans and pricing.
+  </Step>
+  <Step title="Create an account and subscription">
+    Call the API to create a customer account, add a payment method, and start a subscription. Kill Bill automatically generates the first invoice.
+  </Step>
+</Steps>
+
+<Note>
+  Kill Bill is open-source under the Apache 2.0 license. Self-host on your own infrastructure or use [Kill Bill Cloud](https://cloud.killbill.io) for free hosted sandboxes and developer tools.
+</Note>

@@ -1,0 +1,210 @@
+---
+title: "Extending Kill Bill with OSGI plugins"
+description: "Add payment gateways, tax engines, custom invoice logic, and more by installing OSGI bundles that integrate with Kill Bill's extension points."
+---
+
+Kill Bill's plugin system is built on [OSGi](https://www.osgi.org/), the Java component model for dynamic module systems. Every plugin is a self-contained OSGi bundle that registers one or more Kill Bill service interfaces at startup. The platform discovers those services at runtime—no code changes to Kill Bill itself, no redeploys for most operations—and routes the appropriate API calls through them. This architecture means payment gateways, tax calculators, notification forwarders, and other extension points can be installed, configured, updated, and removed while Kill Bill is running.
+
+## Plugin types
+
+<CardGroup cols={2}>
+  <Card title="Payment plugins" icon="credit-card">
+    Implement the `PaymentPluginApi` to integrate with a payment gateway (Stripe, Braintree, PayPal, Adyen, etc.). Kill Bill routes `authorize`, `capture`, `purchase`, `refund`, and `void` calls to the plugin transparently.
+  </Card>
+  <Card title="Invoice plugins" icon="file-invoice-dollar">
+    Implement `InvoicePluginApi` to intercept invoice generation. Common uses: applying tax (Avalara AvaTax, TaxJar), adding custom line items, or modifying invoice state before it is finalized.
+  </Card>
+  <Card title="Notification plugins" icon="bell">
+    Implement `OSGIKillbillEventDispatcher.OSGIKillbillEventHandler` to receive every Kill Bill bus event (account changes, invoice creation, payment results) and forward them to external systems—Kafka, webhooks, CRMs, etc.
+  </Card>
+  <Card title="Catalog plugins" icon="book-open">
+    Implement `CatalogPluginApi` to serve catalog data from an external source rather than static XML files. Useful when plans are managed in a separate product catalog service.
+  </Card>
+  <Card title="Currency plugins" icon="coins">
+    Implement `CurrencyPluginApi` to provide live exchange rates. Kill Bill calls the plugin when converting amounts between currencies during invoice generation.
+  </Card>
+  <Card title="Entitlement plugins" icon="key">
+    Implement `EntitlementPluginApi` to intercept subscription lifecycle events (create, change, cancel) before they are committed, enabling custom business rules.
+  </Card>
+</CardGroup>
+
+## Installing a plugin via the nodes API
+
+Kill Bill nodes communicate via a broadcast mechanism. Sending a `POST /1.0/kb/nodesInfo` command tells all nodes (or just the local one) to perform an action such as installing or starting a plugin.
+
+<Steps>
+  <Step title="Install a plugin from the Kill Bill repository">
+    The `INSTALL_PLUGIN` system command downloads and installs a plugin by its key. The `kbVersion` property is automatically injected by Kill Bill.
+
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "X-Killbill-CreatedBy: admin" \
+      -H "Content-Type: application/json" \
+      -X POST \
+      -d '{
+        "isSystemCommandType": true,
+        "nodeCommandType": "INSTALL_PLUGIN",
+        "nodeCommandProperties": [
+          { "key": "pluginKey", "value": "killbill-stripe" },
+          { "key": "pluginVersion", "value": "LATEST" }
+        ]
+      }' \
+      "http://127.0.0.1:8080/1.0/kb/nodesInfo"
+    ```
+
+    The endpoint returns `HTTP 202 Accepted`; installation happens asynchronously across all nodes.
+  </Step>
+  <Step title="Start the plugin">
+    After installation, send a `START_PLUGIN` command to activate it:
+
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "X-Killbill-CreatedBy: admin" \
+      -H "Content-Type: application/json" \
+      -X POST \
+      -d '{
+        "isSystemCommandType": true,
+        "nodeCommandType": "START_PLUGIN",
+        "nodeCommandProperties": [
+          { "key": "pluginKey", "value": "killbill-stripe" }
+        ]
+      }' \
+      "http://127.0.0.1:8080/1.0/kb/nodesInfo"
+    ```
+  </Step>
+  <Step title="Verify the plugin is running">
+    Query the plugins info endpoint to confirm state:
+
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      "http://127.0.0.1:8080/1.0/kb/pluginsInfo"
+    ```
+  </Step>
+</Steps>
+
+<Info>
+  To install on the local node only and skip broadcasting to cluster peers, add `?localNodeOnly=true` to the `nodesInfo` request.
+</Info>
+
+## Listing installed plugins
+
+`GET /1.0/kb/pluginsInfo` returns the state of every plugin known to the platform:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/pluginsInfo"
+```
+
+Example response:
+
+```json
+[
+  {
+    "bundleSymbolicName": "org.kill-bill.billing.plugin.java.stripe-plugin",
+    "pluginKey": "killbill-stripe",
+    "pluginName": "killbill-stripe",
+    "version": "8.0.1",
+    "state": "RUNNING",
+    "isSelectedForStart": true,
+    "services": [
+      {
+        "serviceTypeName": "org.killbill.billing.payment.plugin.api.PaymentPluginApi",
+        "registrationName": "killbill-stripe"
+      }
+    ]
+  }
+]
+```
+
+The `state` field reflects the OSGi bundle lifecycle: `RUNNING`, `STOPPED`, `DISABLED`, or `UNINSTALLED`. The `services` array lists every Kill Bill API the plugin has registered, which tells you what capabilities it provides.
+
+## Retrieving node information
+
+`GET /1.0/kb/nodesInfo` returns detailed information about each Kill Bill node, including its version and the full plugin list:
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/nodesInfo"
+```
+
+## Plugin configuration per tenant
+
+Plugin configuration is per-tenant, so each customer or business unit can have its own API keys and feature flags. See the [Multi-tenancy guide](/guides/multi-tenancy#plugin-configuration-per-tenant) for the full workflow. The key endpoint is:
+
+```
+POST /1.0/kb/tenants/uploadPluginConfig/{pluginName}
+```
+
+The plugin reads its tenant-scoped configuration at request time, so updates take effect on the next request without restarting the plugin.
+
+## Pass-through plugin endpoints
+
+Plugins can expose their own HTTP endpoints under the `/plugins/` path prefix. Kill Bill proxies any request to `/plugins/{pluginName}/*` directly to the matching plugin's servlet. This is how payment plugins implement webhook receivers, how catalog plugins expose admin UIs, and how reporting plugins serve dashboards.
+
+```bash
+# Example: Stripe plugin webhook receiver
+curl -v \
+  -H "Stripe-Signature: t=...,v1=..." \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{ "type": "payment_intent.succeeded", ... }' \
+  "http://127.0.0.1:8080/plugins/killbill-stripe/stripe/notification"
+```
+
+<Note>
+  The path after the plugin name is entirely defined by the plugin. Refer to the individual plugin's documentation for available endpoints.
+</Note>
+
+## Plugin control API hooks
+
+Two categories of hooks let plugins intercept core Kill Bill operations:
+
+<AccordionGroup>
+  <Accordion title="Payment control hooks">
+    Plugins implementing `PaymentControlPluginApi` receive `priorCall` and `onSuccessCall`/`onFailureCall` callbacks around every payment operation. This enables:
+
+    - Custom retry logic (e.g., retry on a different gateway)
+    - Fraud screening before a payment is submitted
+    - Logging and audit trails
+    - Blocking payments that violate business rules
+  </Accordion>
+  <Accordion title="Invoice control hooks">
+    Plugins implementing `InvoicePluginApi` are called during invoice generation and can:
+
+    - Add additional line items (surcharges, discounts, taxes)
+    - Modify existing line items
+    - Abort invoice creation entirely
+    - Integrate with external tax engines (AvaTax, TaxJar, Vertex) to compute tax amounts before the invoice is finalized
+  </Accordion>
+</AccordionGroup>
+
+## Popular plugins
+
+The Kill Bill ecosystem includes production-grade plugins for common use cases. These are maintained by the Kill Bill team and the community:
+
+| Plugin | Type | Description |
+|--------|------|-------------|
+| `killbill-stripe` | Payment | Stripe payment gateway integration |
+| `killbill-braintree` | Payment | Braintree (PayPal) gateway integration |
+| `killbill-paypal-express` | Payment | PayPal Express Checkout |
+| `killbill-adyen` | Payment | Adyen gateway integration |
+| `killbill-avatax` | Invoice | Avalara AvaTax tax calculation |
+| `killbill-email-notifications` | Notification | Sends email on key billing events |
+| `killbill-analytics` | Notification | Writes events to an analytics schema |
+
+<Tip>
+  Browse the full list of available plugins at the [Kill Bill GitHub organization](https://github.com/killbill). Plugin repositories follow the naming convention `killbill-{name}-plugin`.
+</Tip>

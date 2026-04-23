@@ -1,0 +1,291 @@
+---
+title: "Usage API — recording and querying metered consumption"
+description: "Record metered consumption events for subscriptions and query rolled-up usage totals by unit type and date range for IN_ARREAR billing."
+---
+
+The Usage API lets you push raw consumption data into Kill Bill and retrieve aggregated (rolled-up) totals for any date range. Kill Bill accumulates the usage records you send throughout a billing period and charges the customer at the end of that period when the invoice is generated — this is called `IN_ARREAR` usage billing. You define the unit types, tier structures, and prices in your catalog's `<usage>` elements; the API stores the measurements.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/1.0/kb/usages` | Record usage for a subscription |
+| `GET` | `/1.0/kb/usages/{subscriptionId}` | Get rolled-up usage for all unit types |
+| `GET` | `/1.0/kb/usages/{subscriptionId}/{unitType}` | Get rolled-up usage for a specific unit type |
+
+---
+
+## POST /1.0/kb/usages — record usage
+
+Records one or more usage measurements for a subscription. You can send multiple unit types and multiple date-stamped amounts in a single call.
+
+<Warning>
+  The subscription must be active (not cancelled). If the highest `recordDate` in the request is after the subscription's effective end date, the request is rejected with `HTTP 400 Bad Request`.
+</Warning>
+
+### Request body
+
+<ParamField body="subscriptionId" type="string (UUID)" required>
+  The UUID of the subscription for which you are recording usage.
+</ParamField>
+
+<ParamField body="trackingId" type="string">
+  Optional idempotency key. If you supply a `trackingId`, Kill Bill deduplicates subsequent calls that carry the same ID, making the operation safe to retry.
+</ParamField>
+
+<ParamField body="unitUsageRecords" type="array" required>
+  One entry per unit type. Must contain at least one element.
+
+  <Expandable title="UnitUsageRecord fields">
+    <ParamField body="unitType" type="string" required>
+      The unit type identifier as defined in the catalog `<units>` section (e.g. `gallons`, `api-calls`, `seats`).
+    </ParamField>
+
+    <ParamField body="usageRecords" type="array" required>
+      Array of individual consumption measurements. Must contain at least one element.
+
+      <Expandable title="UsageRecord fields">
+        <ParamField body="recordDate" type="string (ISO 8601 date-time)" required>
+          The date and time when the consumption occurred. Must fall within an active billing period for the subscription.
+        </ParamField>
+
+        <ParamField body="amount" type="number" required>
+          The quantity consumed. Must be a non-negative number.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "subscriptionId": "8ab101b6-15e8-433b-b4f7-f79eeea3a6b4",
+    "trackingId": "batch-2024-06-15-001",
+    "unitUsageRecords": [
+      {
+        "unitType": "gallons",
+        "usageRecords": [
+          {
+            "recordDate": "2024-06-05T00:00:00.000Z",
+            "amount": 12
+          },
+          {
+            "recordDate": "2024-06-12T00:00:00.000Z",
+            "amount": 8
+          },
+          {
+            "recordDate": "2024-06-20T00:00:00.000Z",
+            "amount": 15
+          }
+        ]
+      }
+    ]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/usages"
+```
+
+Returns `HTTP 201 Created` on success. Returns `HTTP 400 Bad Request` if the subscription is inactive or if any `recordDate` is after the subscription cancel date.
+
+<Tip>
+  Use `trackingId` to make usage submission idempotent. If your upstream system retries the same batch (e.g. after a network timeout), Kill Bill will ignore the duplicate rather than double-counting.
+</Tip>
+
+---
+
+## GET /1.0/kb/usages/{subscriptionId} — get usage for all unit types
+
+Returns the aggregated (rolled-up) usage for a subscription across all unit types within the specified date range.
+
+<ParamField path="subscriptionId" type="string (UUID)" required>
+  The UUID of the subscription.
+</ParamField>
+
+<ParamField query="startDate" type="string (ISO 8601 date-time)" required>
+  The start of the date range (inclusive). Returns `HTTP 400` if omitted.
+</ParamField>
+
+<ParamField query="endDate" type="string (ISO 8601 date-time)" required>
+  The end of the date range (exclusive). Returns `HTTP 400` if omitted.
+</ParamField>
+
+<ParamField query="pluginProperty" type="array of strings">
+  Optional plugin-specific properties passed as `key=value` pairs. May be specified multiple times.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/usages/8ab101b6-15e8-433b-b4f7-f79eeea3a6b4?startDate=2024-06-01T00:00:00Z&endDate=2024-07-01T00:00:00Z"
+```
+
+### Response fields
+
+<ResponseField name="subscriptionId" type="string (UUID)">
+  The subscription UUID.
+</ResponseField>
+
+<ResponseField name="startDate" type="string (ISO 8601 date-time)">
+  The start of the queried date range.
+</ResponseField>
+
+<ResponseField name="endDate" type="string (ISO 8601 date-time)">
+  The end of the queried date range.
+</ResponseField>
+
+<ResponseField name="rolledUpUnits" type="array">
+  One entry per unit type, containing the total amount consumed across all `usageRecords` that fall within the date range.
+
+  <Expandable title="RolledUpUnit fields">
+    <ResponseField name="unitType" type="string">
+      The unit type identifier (e.g. `gallons`).
+    </ResponseField>
+
+    <ResponseField name="amount" type="number">
+      The total quantity consumed for this unit type within the date range.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Expandable title="Example response">
+
+```json
+{
+  "subscriptionId": "8ab101b6-15e8-433b-b4f7-f79eeea3a6b4",
+  "startDate": "2024-06-01T00:00:00.000Z",
+  "endDate": "2024-07-01T00:00:00.000Z",
+  "rolledUpUnits": [
+    {
+      "unitType": "gallons",
+      "amount": 35
+    }
+  ]
+}
+```
+
+</Expandable>
+
+---
+
+## GET /1.0/kb/usages/{subscriptionId}/{unitType} — get usage for a specific unit type
+
+Returns the rolled-up usage for a subscription filtered to a single unit type. All other parameters are identical to the all-unit-types endpoint.
+
+<ParamField path="subscriptionId" type="string (UUID)" required>
+  The UUID of the subscription.
+</ParamField>
+
+<ParamField path="unitType" type="string" required>
+  The unit type to retrieve (e.g. `gallons`, `api-calls`). Must match the unit type identifier defined in your catalog.
+</ParamField>
+
+<ParamField query="startDate" type="string (ISO 8601 date-time)" required>
+  Start of the date range (inclusive).
+</ParamField>
+
+<ParamField query="endDate" type="string (ISO 8601 date-time)" required>
+  End of the date range (exclusive).
+</ParamField>
+
+<ParamField query="pluginProperty" type="array of strings">
+  Optional plugin-specific properties as `key=value` pairs.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/usages/8ab101b6-15e8-433b-b4f7-f79eeea3a6b4/gallons?startDate=2024-06-01T00:00:00Z&endDate=2024-07-01T00:00:00Z"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "subscriptionId": "8ab101b6-15e8-433b-b4f7-f79eeea3a6b4",
+  "startDate": "2024-06-01T00:00:00.000Z",
+  "endDate": "2024-07-01T00:00:00.000Z",
+  "rolledUpUnits": [
+    {
+      "unitType": "gallons",
+      "amount": 35
+    }
+  ]
+}
+```
+
+</Expandable>
+
+---
+
+## How IN_ARREAR usage billing works
+
+Kill Bill does not bill usage in real time. Instead, it accumulates all usage records you submit and charges the customer at the **end** of each billing period when the invoice is generated.
+
+The flow is:
+
+1. Your application calls `POST /1.0/kb/usages` throughout the billing period as consumption occurs.
+2. At the end of the billing period (e.g. the monthly invoice date), Kill Bill sums all `usageRecords` with `recordDate` values within that period.
+3. Kill Bill applies the tier pricing defined in the catalog `<usage>` element to the aggregated totals.
+4. The resulting charge appears as a line item on the invoice.
+
+### Catalog usage configuration
+
+Usage pricing is defined inside a plan's `<finalPhase>` element. Here is an example from the SpyCarAdvanced catalog — the `gas-monthly` plan charges per gallon in arrear:
+
+```xml
+<plan name="gas-monthly">
+  <product>Gas</product>
+  <finalPhase type="EVERGREEN">
+    <duration><unit>UNLIMITED</unit></duration>
+    <usages>
+      <usage name="gas-monthly-in-arrear"
+             billingMode="IN_ARREAR"
+             usageType="CONSUMABLE">
+        <billingPeriod>MONTHLY</billingPeriod>
+        <tiers>
+          <tier>
+            <blocks>
+              <tieredBlock>
+                <unit>gallons</unit>
+                <size>1</size>
+                <prices>
+                  <price>
+                    <currency>USD</currency>
+                    <value>3.95</value>
+                  </price>
+                </prices>
+                <max>100</max>
+              </tieredBlock>
+            </blocks>
+          </tier>
+        </tiers>
+      </usage>
+    </usages>
+  </finalPhase>
+</plan>
+```
+
+### Date range guidance
+
+<Info>
+  The `recordDate` in each usage record must fall within an active billing period for the subscription. Kill Bill uses the billing period boundaries (not arbitrary date ranges) when aggregating usage for invoicing. When querying via the API, use the billing period start and end dates as `startDate`/`endDate` to match exactly what will appear on the invoice.
+</Info>
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Submitting usage | Send records as they occur, in real time or batched daily |
+| Querying for invoice preview | Use the billing period start and end dates |
+| Correcting a previous submission | Re-submit with a new `trackingId`; Kill Bill adds to existing totals |
+| Avoiding double-count on retry | Set a stable `trackingId` per batch |

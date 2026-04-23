@@ -1,0 +1,173 @@
+---
+title: "Kill Bill REST API reference"
+description: "Complete reference for the Kill Bill REST API. Covers the base URL, endpoint prefix, HTTP methods, content types, pagination, audit headers, and response codes."
+---
+
+The Kill Bill REST API gives you programmatic access to every aspect of the billing platform — accounts, subscriptions, invoices, payments, catalogs, tenants, and more. All endpoints follow REST conventions and exchange data as JSON.
+
+## Base URL
+
+```
+http://your-killbill-host:8080
+```
+
+Every Kill Bill API endpoint is prefixed with `/1.0/kb/`. For example, to retrieve accounts:
+
+```
+http://your-killbill-host:8080/1.0/kb/accounts
+```
+
+Plugin endpoints are the exception — they are served under `/plugins/` without the `/1.0/kb/` prefix and bypass tenant requirements entirely.
+
+## HTTP methods
+
+| Method   | Usage                                       |
+|----------|---------------------------------------------|
+| `GET`    | Retrieve a resource or list of resources    |
+| `POST`   | Create a new resource                       |
+| `PUT`    | Update an existing resource                 |
+| `DELETE` | Remove a resource                           |
+
+## Content type
+
+Most endpoints consume and produce `application/json`. Pass the appropriate headers when sending a request body:
+
+```bash
+-H "Content-Type: application/json" \
+-H "Accept: application/json"
+```
+
+Some endpoints (catalog upload, template upload) accept `application/xml` or `text/plain`. The endpoint documentation notes any exceptions.
+
+## Pagination
+
+List and search endpoints return results one page at a time. Control the page with two query parameters:
+
+| Parameter | Default | Description                             |
+|-----------|---------|-----------------------------------------|
+| `offset`  | `0`     | Zero-based index of the first record    |
+| `limit`   | `100`   | Maximum number of records to return     |
+
+The response includes the following headers so you can walk through subsequent pages:
+
+| Header                                    | Description                                      |
+|-------------------------------------------|--------------------------------------------------|
+| `X-Killbill-Pagination-CurrentOffset`     | The offset of the first record in this page      |
+| `X-Killbill-Pagination-NextOffset`        | The offset to use to fetch the next page         |
+| `X-Killbill-Pagination-TotalNbRecords`    | Total number of records matching the query       |
+| `X-Killbill-Pagination-MaxNbRecords`      | Total number of records in the collection        |
+| `X-Killbill-Pagination-NextPageUri`       | Full URI for the next page (empty on last page)  |
+
+<Tip>
+When `X-Killbill-Pagination-NextPageUri` is absent or empty, you have reached the last page.
+</Tip>
+
+## Audit headers
+
+Kill Bill records a full audit trail for every write operation. Three headers control the audit context:
+
+| Header                   | Required | Description                                              |
+|--------------------------|----------|----------------------------------------------------------|
+| `X-Killbill-CreatedBy`   | Yes      | Identity of the caller (person or service name)         |
+| `X-Killbill-Reason`      | No       | Business reason for the change                          |
+| `X-Killbill-Comment`     | No       | Free-text note attached to the audit record             |
+
+`X-Killbill-CreatedBy` is required on all write operations (`POST`, `PUT`, `DELETE`). Omitting it returns a `400 Bad Request`.
+
+```bash
+curl -u admin:password \
+  -H "X-Killbill-ApiKey: your-api-key" \
+  -H "X-Killbill-ApiSecret: your-api-secret" \
+  -H "X-Killbill-CreatedBy: jane-ops" \
+  -H "X-Killbill-Reason: customer-request" \
+  -H "X-Killbill-Comment: ticket #1234" \
+  -H "Content-Type: application/json" \
+  https://your-killbill-host:8080/1.0/kb/accounts
+```
+
+## Common query parameters
+
+Several parameters appear across many endpoints:
+
+| Parameter        | Values                    | Description                                                                   |
+|------------------|---------------------------|-------------------------------------------------------------------------------|
+| `audit`          | `NONE`, `MINIMAL`, `FULL` | Level of audit log data embedded in the response. Defaults to `NONE`.        |
+| `withPluginInfo` | `true`, `false`           | Include extended payment-plugin metadata in the response.                     |
+
+<Info>
+Setting `audit=FULL` embeds the complete audit trail for every object in the response. Use it sparingly on large result sets, as it significantly increases response size and latency.
+</Info>
+
+## Resource categories
+
+<CardGroup cols={2}>
+  <Card title="Accounts" href="/api-reference/accounts">
+    Create and manage customer accounts. Retrieve balance, credit, and full timeline views.
+  </Card>
+  <Card title="Subscriptions" href="/api-reference/subscriptions">
+    Create, change, pause, resume, and cancel subscriptions on a plan.
+  </Card>
+  <Card title="Bundles" href="/api-reference/bundles">
+    Group related subscriptions together and transfer bundles between accounts.
+  </Card>
+  <Card title="Invoices" href="/api-reference/invoices">
+    Retrieve, commit, void, and adjust invoices. Trigger dry-run invoice generation.
+  </Card>
+  <Card title="Credits" href="/api-reference/credits">
+    Apply credit-balance adjustments to an account.
+  </Card>
+  <Card title="Payments" href="/api-reference/payments">
+    Authorize, capture, purchase, refund, and chargeback payments.
+  </Card>
+  <Card title="Payment methods" href="/api-reference/payment-methods">
+    Add, remove, and set the default payment method for an account.
+  </Card>
+  <Card title="Payment gateway" href="/api-reference/payment-gateway">
+    Build hosted payment forms and handle gateway notifications.
+  </Card>
+  <Card title="Transactions" href="/api-reference/transactions">
+    Look up individual payment transactions and update pending transaction state.
+  </Card>
+  <Card title="Catalog" href="/api-reference/catalog">
+    Upload and retrieve the product catalog in JSON or XML format.
+  </Card>
+  <Card title="Overdue" href="/api-reference/overdue">
+    Upload and retrieve the overdue (dunning) configuration.
+  </Card>
+  <Card title="Usage" href="/api-reference/usage">
+    Record and retrieve usage data for consumption-based billing.
+  </Card>
+  <Card title="Tenants" href="/api-reference/tenants">
+    Create tenants and manage per-tenant configuration, callbacks, and key-value pairs.
+  </Card>
+  <Card title="Tags" href="/api-reference/tags">
+    Apply system and user-defined tags to any Kill Bill object.
+  </Card>
+  <Card title="Custom fields" href="/api-reference/custom-fields">
+    Attach arbitrary key-value metadata to any Kill Bill object.
+  </Card>
+  <Card title="Security" href="/api-reference/security">
+    Manage users, roles, and permissions across the platform.
+  </Card>
+  <Card title="Admin" href="/api-reference/admin">
+    Administrative operations: cache invalidation, queue inspection, payment state fixes.
+  </Card>
+</CardGroup>
+
+## Response codes
+
+| Code  | Meaning               | When it occurs                                                                 |
+|-------|-----------------------|--------------------------------------------------------------------------------|
+| `200` | OK                    | Successful `GET` or `PUT` that returns a body                                 |
+| `201` | Created               | Successful `POST` that created a new resource; `Location` header contains URI |
+| `204` | No Content            | Successful `DELETE` or `PUT` with no response body                            |
+| `400` | Bad Request           | Invalid input — malformed UUID, missing required header, bad parameter        |
+| `401` | Unauthorized          | Missing or invalid HTTP Basic Auth credentials                                |
+| `404` | Not Found             | The requested resource does not exist                                         |
+| `409` | Conflict              | The operation conflicts with existing state (e.g., duplicate external key)    |
+| `422` | Unprocessable Entity  | Request is well-formed but violates a business rule                           |
+| `500` | Internal Server Error | Unexpected server-side error                                                  |
+
+<Note>
+Error responses include a JSON body with a `code` field (Kill Bill internal error code) and a `message` field describing the problem.
+</Note>

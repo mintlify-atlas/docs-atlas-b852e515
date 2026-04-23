@@ -1,0 +1,295 @@
+---
+title: "Authentication, authorization, and RBAC in Kill Bill"
+description: "Secure Kill Bill with HTTP Basic Auth, per-tenant API key/secret headers, role-based access control, and granular per-resource permissions."
+---
+
+Kill Bill uses a two-layer security model. The first layer is HTTP Basic Auth for all admin operations, backed by Apache Shiro. The second layer is per-tenant authentication via API key and secret headers, which scopes every request to a specific tenant. On top of this, a role-based access control (RBAC) system lets you define fine-grained permissions so that different users or services can be granted only the access they require.
+
+## Authentication overview
+
+<CardGroup cols={2}>
+  <Card title="HTTP Basic Auth" icon="lock">
+    Every request to the Kill Bill API must include a valid username and password via HTTP Basic Auth. The default admin credentials are `admin` / `password`. You should change these in production.
+  </Card>
+  <Card title="Tenant API key and secret" icon="key">
+    Requests that operate on tenant-scoped resources must also include `X-Killbill-ApiKey` and `X-Killbill-ApiSecret` headers. Kill Bill resolves the tenant from these headers and applies the correct catalog, configuration, and plugins.
+  </Card>
+</CardGroup>
+
+A complete request includes both layers:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/accounts"
+```
+
+<Warning>
+  Admin credentials are global—they are not scoped to a tenant. Grant admin access only to operators who need full platform access. For application-level integrations, create dedicated users with restricted roles.
+</Warning>
+
+## Roles and permissions
+
+Kill Bill's RBAC model has two concepts: **roles** group a set of permissions, and **users** are assigned one or more roles. Permissions follow a `resource:action` naming convention. An asterisk wildcard (`resource:*`) grants all actions on a resource.
+
+### Key permissions
+
+<AccordionGroup>
+  <Accordion title="Account permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `account:create` | Create new accounts |
+    | `account:update` | Update account details |
+    | `account:delete` | Delete or close accounts |
+    | `account:*` | All account operations |
+  </Accordion>
+  <Accordion title="Invoice permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `invoice:create` | Trigger manual invoice generation |
+    | `invoice:update` | Adjust invoice items |
+    | `invoice:delete` | Void invoices |
+    | `invoice:*` | All invoice operations |
+  </Accordion>
+  <Accordion title="Payment permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `payment:create` | Initiate payments |
+    | `payment:update` | Update payment state |
+    | `payment:delete` | Void or cancel payments |
+    | `payment:*` | All payment operations |
+  </Accordion>
+  <Accordion title="Subscription permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `entitlement:create` | Create subscriptions |
+    | `entitlement:update` | Change plan or phase |
+    | `entitlement:cancel` | Cancel subscriptions |
+    | `entitlement:*` | All subscription operations |
+  </Accordion>
+  <Accordion title="Catalog permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `catalog:config_upload` | Upload catalog XML |
+    | `catalog:*` | All catalog operations |
+  </Accordion>
+  <Accordion title="Tag and custom field permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `tag:create` | Add tags |
+    | `tag:delete` | Remove tags |
+    | `custom_field:create` | Add custom fields |
+    | `custom_field:delete` | Remove custom fields |
+  </Accordion>
+  <Accordion title="Administrative permissions">
+    | Permission | Description |
+    |-----------|-------------|
+    | `user:create` | Add new API users |
+    | `user:update` | Update existing users |
+    | `tenant:create` | Create new tenants |
+    | `admin:trigger_invoice` | Manually trigger invoice runs |
+  </Accordion>
+</AccordionGroup>
+
+## Creating a role definition
+
+Define a role by posting a name and the list of permissions it grants:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "role": "billing-operator",
+    "permissions": [
+      "account:*",
+      "invoice:*",
+      "payment:create",
+      "payment:update",
+      "entitlement:create",
+      "entitlement:update",
+      "entitlement:cancel"
+    ]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/security/roles"
+```
+
+A `201 Created` response confirms the role was saved. Retrieve it at any time:
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/security/roles/billing-operator"
+```
+
+Update a role's permissions (replaces the current permission list):
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{
+    "role": "billing-operator",
+    "permissions": [
+      "account:*",
+      "invoice:*",
+      "payment:*",
+      "entitlement:*"
+    ]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/security/roles"
+```
+
+## Creating a user and assigning roles
+
+A user is an identity that authenticates with HTTP Basic Auth. When you create a user you provide a password and a list of role names to assign:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "username": "jane",
+    "password": "s3cr3t!",
+    "roles": ["billing-operator"]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/security/users"
+```
+
+The new user can immediately authenticate using their credentials. Retrieve their current role assignments:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane/roles"
+```
+
+Response:
+
+```json
+{
+  "username": "jane",
+  "roles": ["billing-operator"]
+}
+```
+
+Update a user's roles (replaces the current role list):
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{
+    "roles": ["billing-operator", "catalog-viewer"]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane/roles"
+```
+
+## Updating a user password
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{
+    "username": "jane",
+    "password": "newP@ssw0rd!"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane/password"
+```
+
+A `204 No Content` response confirms the password was changed. The user must use the new password on their next request.
+
+## Deactivating a user
+
+To revoke all access for a user without deleting their audit history, invalidate the user:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane"
+```
+
+The `GET .../users/{username}/roles` endpoint returns `404 Not Found` for an invalidated user.
+
+## Inspecting the current user's permissions
+
+A user can query their own effective permissions:
+
+```bash
+curl -v \
+  -u jane:newP@ssw0rd! \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/security/permissions"
+```
+
+Kill Bill aggregates the permissions from all of the user's roles and returns a flat set:
+
+```json
+[
+  "account:create",
+  "account:update",
+  "account:delete",
+  "invoice:create",
+  "invoice:update",
+  "invoice:delete",
+  "payment:create",
+  "payment:update",
+  "payment:delete",
+  "entitlement:create",
+  "entitlement:update",
+  "entitlement:cancel"
+]
+```
+
+You can also retrieve information about the authenticated Shiro subject (session state, authentication status):
+
+```bash
+curl -v \
+  -u jane:newP@ssw0rd! \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/security/subject"
+```
+
+## Recommended role structure
+
+<Tip>
+  Start with a small number of well-defined roles and expand as needed. A typical production setup has three or four roles:
+
+  - **`admin`** — full access, only for operators managing the platform
+  - **`billing-operator`** — can manage accounts, subscriptions, invoices, and payments
+  - **`read-only`** — can read all resources but not mutate any state
+  - **`catalog-manager`** — can upload and manage catalog and configuration, but not billing data
+</Tip>

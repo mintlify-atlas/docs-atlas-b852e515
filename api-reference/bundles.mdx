@@ -1,0 +1,363 @@
+---
+title: "Bundles API — subscription group management"
+description: "Retrieve, search, pause, resume, and transfer Kill Bill bundles — the containers that group a BASE subscription with its ADD_ON subscriptions."
+---
+
+A bundle is the logical container that groups a `BASE` subscription with zero or more `ADD_ON` subscriptions. Every subscription belongs to exactly one bundle, and every bundle belongs to exactly one account. Bundles are identified by a Kill Bill UUID and an optional caller-assigned `externalKey`.
+
+When a base plan is cancelled, Kill Bill automatically cancels any add-on subscriptions that depend on it. Pausing or resuming a bundle affects all subscriptions within it simultaneously.
+
+<Info>
+  Bundles are created implicitly when you [create a subscription](/api-reference/subscriptions#create-subscription). You cannot create a bundle directly through the API — only retrieve, modify, or transfer existing ones.
+</Info>
+
+---
+
+## Get bundle by UUID
+
+<br />
+
+`GET /1.0/kb/bundles/{bundleId}`
+
+Retrieves a single bundle by its Kill Bill UUID, including all of its subscriptions.
+
+### Path parameters
+
+<ParamField path="bundleId" type="string" required>
+  The Kill Bill UUID of the bundle.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level. One of `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+### Response
+
+Returns a [Bundle object](#bundle-object).
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://localhost:8080/1.0/kb/bundles/2ad52f53-85ae-408a-9879-32a7e59dd03d"
+```
+
+---
+
+## Get bundle by external key
+
+<br />
+
+`GET /1.0/kb/bundles`
+
+Retrieves bundles by their caller-assigned external key. By default, only the active bundle is returned. Bundles can be transferred between accounts, which creates a new bundle with the same external key, so older, inactive bundles may also exist.
+
+### Query parameters
+
+<ParamField query="externalKey" type="string" required>
+  The caller-assigned external key.
+</ParamField>
+
+<ParamField query="includedDeleted" type="boolean" default="false">
+  When `true`, returns all bundles with the given key including transferred (deleted) ones. When `false`, returns only the single active bundle.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an array of [Bundle objects](#bundle-object).
+
+---
+
+## List all bundles
+
+<br />
+
+`GET /1.0/kb/bundles/pagination`
+
+Returns a paginated list of all bundles across all accounts in the tenant.
+
+### Query parameters
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based page offset.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum number of bundles to return per page.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an array of [Bundle objects](#bundle-object). The `Link` response header contains the next page URL when more results are available.
+
+---
+
+## Search bundles
+
+<br />
+
+`GET /1.0/kb/bundles/search/{searchKey}`
+
+Searches bundles using a substring match against the bundle's external key and the external keys of its subscriptions.
+
+### Path parameters
+
+<ParamField path="searchKey" type="string" required>
+  The search string. URL-encode special characters.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based page offset.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an array of matching [Bundle objects](#bundle-object).
+
+---
+
+## Pause bundle
+
+<br />
+
+`PUT /1.0/kb/bundles/{bundleId}/pause`
+
+Pauses all subscriptions within a bundle simultaneously, blocking both entitlement and billing as of the requested date. This is the preferred way to pause a customer's service when they have multiple related subscriptions.
+
+### Path parameters
+
+<ParamField path="bundleId" type="string" required>
+  The Kill Bill UUID of the bundle to pause.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which the pause should take effect. Defaults to today in the account's time zone.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X PUT \
+  "http://localhost:8080/1.0/kb/bundles/2ad52f53-85ae-408a-9879-32a7e59dd03d/pause?requestedDate=2025-02-01"
+```
+
+---
+
+## Resume bundle
+
+<br />
+
+`PUT /1.0/kb/bundles/{bundleId}/resume`
+
+Resumes all subscriptions within a previously paused bundle as of the requested date.
+
+### Path parameters
+
+<ParamField path="bundleId" type="string" required>
+  The Kill Bill UUID of the bundle to resume.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which to resume. Defaults to today.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+---
+
+## Transfer bundle
+
+<br />
+
+`POST /1.0/kb/bundles/{bundleId}`
+
+Transfers all subscriptions in a bundle to a different account. Kill Bill cancels the existing subscriptions on the source account and creates new subscriptions on the target account, preserving the bundle's external key.
+
+<Warning>
+  This operation is irreversible. Once transferred, the original bundle's subscriptions are cancelled. Verify the target `accountId` before proceeding.
+</Warning>
+
+### Path parameters
+
+<ParamField path="bundleId" type="string" required>
+  The Kill Bill UUID of the bundle to transfer.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which the transfer should take effect.
+</ParamField>
+
+<ParamField query="billingPolicy" type="string" default="END_OF_TERM">
+  Controls when billing stops on the source account.
+
+  | Value | Description |
+  |---|---|
+  | `IMMEDIATE` | Billing on the source account stops immediately. |
+  | `END_OF_TERM` | Billing on the source account continues through the current period. |
+</ParamField>
+
+<ParamField query="bcdTransfer" type="string" default="USE_EXISTING">
+  Controls how the billing cycle day is set on the new subscriptions.
+
+  | Value | Description |
+  |---|---|
+  | `USE_EXISTING` | Keeps the same billing cycle day as the source subscriptions. |
+  | `USE_TARGET_ACCOUNT` | Uses the target account's billing cycle day. |
+  | `RESET_BCD` | Resets the BCD based on the transfer date. |
+</ParamField>
+
+### Request body
+
+<ParamField body="accountId" type="string" required>
+  UUID of the target account that will receive the bundle.
+</ParamField>
+
+<ParamField body="subscriptions" type="array">
+  Optional array of subscription objects. Each element can specify a `subscriptionId` and a new `externalKey` to assign to that subscription after transfer.
+</ParamField>
+
+### Response
+
+`201 Created` — Returns a `Location` header pointing to the new bundle on the target account.
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "accountId": "3bc63f64-96bf-519b-9980-43b8f60ee14e"
+  }' \
+  "http://localhost:8080/1.0/kb/bundles/2ad52f53-85ae-408a-9879-32a7e59dd03d?billingPolicy=END_OF_TERM"
+```
+
+---
+
+## Tags and custom fields
+
+Bundles support the same tags and custom fields interface as accounts.
+
+| Operation | Endpoint |
+|---|---|
+| Get tags | `GET /1.0/kb/bundles/{bundleId}/tags` |
+| Add tags | `POST /1.0/kb/bundles/{bundleId}/tags` |
+| Remove tags | `DELETE /1.0/kb/bundles/{bundleId}/tags` |
+| Get custom fields | `GET /1.0/kb/bundles/{bundleId}/customFields` |
+| Add custom fields | `POST /1.0/kb/bundles/{bundleId}/customFields` |
+| Modify custom fields | `PUT /1.0/kb/bundles/{bundleId}/customFields` |
+| Remove custom fields | `DELETE /1.0/kb/bundles/{bundleId}/customFields` |
+
+---
+
+## Bundle object
+
+<ResponseField name="bundleId" type="string">
+  Kill Bill UUID for the bundle.
+</ResponseField>
+
+<ResponseField name="accountId" type="string">
+  UUID of the account that owns the bundle.
+</ResponseField>
+
+<ResponseField name="externalKey" type="string">
+  Caller-assigned external key for the bundle. This key is preserved across account transfers.
+</ResponseField>
+
+<ResponseField name="subscriptions" type="array">
+  Array of [Subscription objects](/api-reference/subscriptions#subscription-object) contained within this bundle. The first element is typically the `BASE` subscription; subsequent elements are `ADD_ON` subscriptions.
+
+  <Expandable title="Subscription fields">
+    <ResponseField name="subscriptionId" type="string">Kill Bill UUID for the subscription.</ResponseField>
+    <ResponseField name="externalKey" type="string">Caller-assigned key for the subscription.</ResponseField>
+    <ResponseField name="planName" type="string">Currently active catalog plan name.</ResponseField>
+    <ResponseField name="productName" type="string">Catalog product name.</ResponseField>
+    <ResponseField name="productCategory" type="string">`BASE` or `ADD_ON`.</ResponseField>
+    <ResponseField name="billingPeriod" type="string">Current billing period.</ResponseField>
+    <ResponseField name="state" type="string">Current entitlement state.</ResponseField>
+    <ResponseField name="startDate" type="string">ISO 8601 date-time when entitlement started.</ResponseField>
+    <ResponseField name="chargedThroughDate" type="string">Date through which the subscription has been invoiced.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="timeline" type="object">
+  Bundle-level event timeline aggregating events from all subscriptions within the bundle.
+</ResponseField>
+
+<ResponseField name="auditLogs" type="array">
+  Audit log entries. Only present when `audit` is set to `MINIMAL` or `FULL`.
+</ResponseField>
+
+### Example bundle response
+
+```json
+{
+  "bundleId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+  "accountId": "1ad42e3c-74ad-307a-8768-21a6e48cc02c",
+  "externalKey": "bundle-001",
+  "subscriptions": [
+    {
+      "subscriptionId": "b7f9a12d-3c2e-4f1a-8b9c-5d6e7f8a9b0c",
+      "externalKey": "sub-base-001",
+      "planName": "standard-monthly",
+      "productName": "Standard",
+      "productCategory": "BASE",
+      "billingPeriod": "MONTHLY",
+      "phaseType": "EVERGREEN",
+      "priceList": "DEFAULT",
+      "state": "ACTIVE",
+      "startDate": "2025-01-01T00:00:00.000Z",
+      "billingStartDate": "2025-01-01T00:00:00.000Z",
+      "chargedThroughDate": "2025-02-01",
+      "billCycleDayLocal": 1,
+      "events": [],
+      "prices": []
+    }
+  ],
+  "timeline": {
+    "accountId": "1ad42e3c-74ad-307a-8768-21a6e48cc02c",
+    "bundleId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+    "externalKey": "bundle-001",
+    "events": []
+  }
+}
+```

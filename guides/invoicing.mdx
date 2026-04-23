@@ -1,0 +1,271 @@
+---
+title: "Automatic invoice generation in Kill Bill"
+description: "Kill Bill auto-generates invoices on subscription events. Learn to trigger, dry-run, adjust, void, and add external charges via the API."
+---
+
+Kill Bill generates invoices automatically in response to subscription lifecycle events — plan creation, trial end, renewal, plan change, and cancellation. You rarely need to call the invoice API directly during normal operations; however, the API becomes essential for manual triggers, previews, external charges, and adjustments.
+
+## How automatic invoicing works
+
+When a subscription event occurs (or a scheduled billing date arrives), the Kill Bill invoicing engine:
+
+<Steps>
+  <Step title="Calculates the invoice items">
+    The engine computes prorated or full-period charges based on the subscription's plan, phase, BCD, and any applicable credit balance.
+  </Step>
+  <Step title="Creates the invoice record">
+    A new invoice is persisted with a status of `COMMITTED`. Each item on the invoice has a `type` that identifies its origin.
+  </Step>
+  <Step title="Triggers payment">
+    Unless the account has `AUTO_PAY_OFF` set, Kill Bill immediately attempts to pay the invoice using the account's default payment method.
+  </Step>
+</Steps>
+
+## Invoice item types
+
+| Type | Description |
+|---|---|
+| `RECURRING` | Periodic charge for an active subscription phase |
+| `FIXED` | One-time charge for a trial or fixed-price phase |
+| `USAGE` | Metered charge computed from recorded usage data |
+| `EXTERNAL_CHARGE` | Manually inserted charge not tied to a subscription |
+| `CBA_ADJ` | Credit balance adjustment — credit applied to reduce the invoice balance |
+| `ITEM_ADJ` | Manual item-level adjustment (partial or full credit on a specific item) |
+| `REPAIR_ADJ` | Automatic credit generated when a plan change causes proration |
+| `TAX` | Tax item inserted by a tax plugin or manually |
+
+## Dry-run invoicing
+
+Before committing to a plan change or a future billing date, you can preview what the invoice would look like without persisting it.
+
+`POST /1.0/kb/invoices/dryRun` accepts an `InvoiceDryRunJson` body and returns a preview invoice.
+
+### Preview invoice for a future date
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "dryRunType": "TARGET_DATE"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/invoices/dryRun?accountId=2ad52f53-85ae-408a-9879-32a7e59dd03d&targetDate=2026-06-01"
+```
+
+### Preview invoice for a subscription change
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "dryRunType": "SUBSCRIPTION_ACTION",
+    "dryRunAction": "CHANGE",
+    "subscriptionId": "77e23878-8b9d-403b-bf31-93003e125712",
+    "bundleId": "a8f78db4-9b3e-4b9c-ab3a-001234567890",
+    "planName": "super-monthly"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/invoices/dryRun?accountId=2ad52f53-85ae-408a-9879-32a7e59dd03d"
+```
+
+### Preview the upcoming invoice
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "dryRunType": "UPCOMING_INVOICE"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/invoices/dryRun?accountId=2ad52f53-85ae-408a-9879-32a7e59dd03d"
+```
+
+<Note>
+A `204 No Content` response from the dry-run endpoint means there is nothing to invoice for the specified date or action — for example, the subscription has already been invoiced through that period.
+</Note>
+
+## Triggering invoice generation manually
+
+`POST /1.0/kb/invoices` generates a real (committed) invoice for an account up to a target date. This is useful when you need to invoice ahead of the scheduled billing run.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/invoices?accountId=2ad52f53-85ae-408a-9879-32a7e59dd03d&targetDate=2026-06-01"
+```
+
+## Adding external charges
+
+`POST /1.0/kb/invoices/charges/{accountId}` inserts one or more external charge items. External charges appear as `EXTERNAL_CHARGE` items on a new or existing invoice.
+
+Set `autoCommit=true` to immediately commit and pay the invoice. Without it the invoice is created in `DRAFT` status.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '[
+    {
+      "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+      "amount": 50.00,
+      "currency": "USD",
+      "description": "Professional services — April 2026"
+    }
+  ]' \
+  "http://127.0.0.1:8080/1.0/kb/invoices/charges/2ad52f53-85ae-408a-9879-32a7e59dd03d?autoCommit=true"
+```
+
+## Adjusting invoice items
+
+`POST /1.0/kb/invoices/{invoiceId}` creates an `ITEM_ADJ` entry that partially or fully credits a specific invoice item.
+
+```bash
+# Fully credit a specific invoice item
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+    "invoiceItemId": "c3d4e5f6-1234-5678-abcd-000000000001"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/invoices/b1c2d3e4-5678-90ab-cdef-000000000001"
+```
+
+To issue a partial credit, include `amount` in the body.
+
+## Credit balance adjustments (CBA)
+
+Kill Bill automatically applies any account credit balance (`CBA_ADJ` items) to offset new invoice charges. This happens transparently during invoice generation — if the account has available credit, the invoice balance is reduced accordingly.
+
+You can delete a specific CBA item if it was added in error:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/invoices/b1c2d3e4-5678-90ab-cdef-000000000001/c3d4e5f6-1234-5678-abcd-000000000001/cba?accountId=2ad52f53-85ae-408a-9879-32a7e59dd03d"
+```
+
+## Voiding an invoice
+
+`DELETE /1.0/kb/invoices/{invoiceId}` voids a committed invoice, setting its status to `VOID`. Only invoices that have not been paid can be voided.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/invoices/b1c2d3e4-5678-90ab-cdef-000000000001"
+```
+
+<Warning>
+Voiding an invoice does not automatically re-generate replacement charges. If the original invoice contained recurring items that should still be billed, trigger a new invoice manually after voiding.
+</Warning>
+
+## HTML invoice rendering
+
+Kill Bill can render an invoice as HTML using a Mustache template stored in the tenant configuration. This is useful for generating customer-facing PDFs or email previews.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: text/html" \
+  "http://127.0.0.1:8080/1.0/kb/invoices/b1c2d3e4-5678-90ab-cdef-000000000001/html"
+```
+
+To upload a custom HTML template:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: text/html" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary @invoice-template.html \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadInvoiceTemplate"
+```
+
+## Parent-child invoicing
+
+Kill Bill supports a hierarchical account model where a **parent** account aggregates charges from multiple **child** accounts into a single invoice. Child accounts generate their own invoices normally, and the parent account's invoice consolidates the balances. This is typically used by resellers or enterprise customers with multiple sub-accounts.
+
+<Info>
+Parent-child invoicing requires setting `isParentAccount` on the parent account and associating child accounts via `parentAccountId`. The parent account pays the consolidated invoice; child accounts do not trigger payments directly.
+</Info>
+
+## Retrieving invoices
+
+```bash
+# Get a specific invoice by ID
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/invoices/b1c2d3e4-5678-90ab-cdef-000000000001"
+```
+
+```bash
+# Get an invoice by invoice number
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/invoices/byNumber/42"
+```
+
+## Endpoint summary
+
+<CardGroup cols={2}>
+  <Card title="POST /1.0/kb/invoices" icon="file-invoice">
+    Trigger invoice generation for an account up to a target date.
+  </Card>
+  <Card title="POST /1.0/kb/invoices/dryRun" icon="flask">
+    Preview an invoice without persisting it.
+  </Card>
+  <Card title="POST /1.0/kb/invoices/charges/{accountId}" icon="circle-plus">
+    Add external charges to a new or existing invoice.
+  </Card>
+  <Card title="POST /1.0/kb/invoices/{invoiceId}" icon="pen">
+    Adjust (partially or fully credit) a specific invoice item.
+  </Card>
+  <Card title="DELETE /1.0/kb/invoices/{invoiceId}" icon="ban">
+    Void an unpaid committed invoice.
+  </Card>
+  <Card title="GET /1.0/kb/invoices/{invoiceId}/html" icon="code">
+    Render an invoice as HTML using the tenant template.
+  </Card>
+</CardGroup>

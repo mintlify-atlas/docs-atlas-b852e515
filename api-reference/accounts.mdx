@@ -1,0 +1,653 @@
+---
+title: "Accounts API — customer account management"
+description: "Create, retrieve, update, and manage Kill Bill customer accounts. Covers bundles, invoices, payments, overdue state, tags, and custom fields."
+---
+
+An account is the top-level entity in Kill Bill that represents a customer. Every subscription, invoice, payment, and credit is attached to an account. Accounts store billing contact information, currency, time zone, and the billing cycle day used when generating invoices.
+
+<Note>
+  All API calls require HTTP Basic Auth credentials (`admin:password` by default) plus the tenant API key and secret headers. The `X-Killbill-CreatedBy` header is required for all write operations.
+</Note>
+
+---
+
+## Get account by external key
+
+<br />
+
+`GET /1.0/kb/accounts`
+
+Retrieves an account using its `externalKey`. An external key is a caller-supplied identifier that uniquely identifies the account within your system.
+
+### Query parameters
+
+<ParamField query="externalKey" type="string" required>
+  The caller-supplied external key for the account.
+</ParamField>
+
+<ParamField query="accountWithBalance" type="boolean" default="false">
+  When `true`, the response includes the current account balance.
+</ParamField>
+
+<ParamField query="accountWithBalanceAndCBA" type="boolean" default="false">
+  When `true`, the response includes both the account balance and the credit balance adjustment (CBA).
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level. One of `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+### Response
+
+Returns a single [Account object](#account-object).
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://localhost:8080/1.0/kb/accounts?externalKey=my-customer-001"
+```
+
+---
+
+## List accounts
+
+<br />
+
+`GET /1.0/kb/accounts/pagination`
+
+Returns a paginated list of all accounts in the tenant.
+
+### Query parameters
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based page offset.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum number of accounts to return per page.
+</ParamField>
+
+<ParamField query="accountWithBalance" type="boolean" default="false">
+  Include the account balance in each result.
+</ParamField>
+
+<ParamField query="accountWithBalanceAndCBA" type="boolean" default="false">
+  Include both the account balance and the CBA in each result.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level. One of `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+### Response
+
+Returns an array of [Account objects](#account-object). The response `Link` header contains the URL for the next page when more results are available.
+
+---
+
+## Search accounts
+
+<br />
+
+`GET /1.0/kb/accounts/search/{searchKey}`
+
+Searches accounts using a case-insensitive substring match against the account name, email, external key, or company name.
+
+### Path parameters
+
+<ParamField path="searchKey" type="string" required>
+  The search string. URL-encode special characters.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based page offset.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField query="accountWithBalance" type="boolean" default="false">
+  Include the account balance in each result.
+</ParamField>
+
+<ParamField query="accountWithBalanceAndCBA" type="boolean" default="false">
+  Include both the account balance and the CBA in each result.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an array of matching [Account objects](#account-object).
+
+---
+
+## Create account
+
+<br />
+
+`POST /1.0/kb/accounts`
+
+Creates a new customer account. Returns `201 Created` with a `Location` header pointing to the new account resource.
+
+### Request body
+
+<ParamField body="externalKey" type="string">
+  A caller-assigned unique identifier for the account in your system. If omitted, Kill Bill generates a UUID.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Full name of the account holder.
+</ParamField>
+
+<ParamField body="firstNameLength" type="integer">
+  Length of the first name portion of `name`, used for display formatting.
+</ParamField>
+
+<ParamField body="email" type="string">
+  Primary email address for the account.
+</ParamField>
+
+<ParamField body="currency" type="string" required>
+  ISO 4217 currency code (e.g., `USD`, `EUR`, `GBP`).
+</ParamField>
+
+<ParamField body="timeZone" type="string">
+  IANA time zone identifier (e.g., `America/New_York`, `UTC`). Determines when the billing cycle resets.
+</ParamField>
+
+<ParamField body="billCycleDayLocal" type="integer">
+  Day of month (1–31) on which recurring charges are billed. If `0`, Kill Bill assigns the day based on the first subscription's start date.
+</ParamField>
+
+<ParamField body="address1" type="string">
+  Street address line 1.
+</ParamField>
+
+<ParamField body="address2" type="string">
+  Street address line 2.
+</ParamField>
+
+<ParamField body="city" type="string">
+  City.
+</ParamField>
+
+<ParamField body="state" type="string">
+  State or province.
+</ParamField>
+
+<ParamField body="postalCode" type="string">
+  Postal or ZIP code.
+</ParamField>
+
+<ParamField body="country" type="string">
+  ISO 3166-1 alpha-2 country code (e.g., `US`, `DE`).
+</ParamField>
+
+<ParamField body="locale" type="string">
+  BCP 47 locale tag for invoice formatting (e.g., `en_US`, `fr_FR`).
+</ParamField>
+
+<ParamField body="phone" type="string">
+  Phone number.
+</ParamField>
+
+<ParamField body="company" type="string">
+  Company or organization name.
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Free-text notes about the account.
+</ParamField>
+
+<ParamField body="parentAccountId" type="string">
+  UUID of a parent account. Used for hierarchical billing where a parent account pays for child accounts.
+</ParamField>
+
+<ParamField body="isPaymentDelegatedToParent" type="boolean">
+  When `true`, payments are collected from the parent account rather than this account.
+</ParamField>
+
+### Response
+
+`201 Created` — Returns the created [Account object](#account-object) in the body and a `Location` header.
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "externalKey": "my-customer-001",
+    "name": "Jane Smith",
+    "firstNameLength": 4,
+    "email": "jane@example.com",
+    "currency": "USD",
+    "timeZone": "America/New_York",
+    "billCycleDayLocal": 1,
+    "address1": "123 Main St",
+    "address2": "Suite 4",
+    "city": "New York",
+    "state": "NY",
+    "postalCode": "10001",
+    "country": "US",
+    "locale": "en_US",
+    "phone": "+1-555-555-0100",
+    "company": "Acme Corp"
+  }' \
+  "http://localhost:8080/1.0/kb/accounts"
+```
+
+---
+
+## Get account by UUID
+
+<br />
+
+`GET /1.0/kb/accounts/{accountId}`
+
+Retrieves an account by its Kill Bill UUID.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="accountWithBalance" type="boolean" default="false">
+  Include the current account balance.
+</ParamField>
+
+<ParamField query="accountWithBalanceAndCBA" type="boolean" default="false">
+  Include both the account balance and the CBA.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns a single [Account object](#account-object).
+
+---
+
+## Update account
+
+<br />
+
+`PUT /1.0/kb/accounts/{accountId}`
+
+Updates mutable fields on an existing account. Returns `204 No Content` on success.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account to update.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="treatNullValueAsReset" type="boolean" default="false">
+  When `true`, fields present in the request body but set to `null` will reset the stored value to `null`. When `false` (default), `null` fields in the request body are ignored and the stored value is preserved.
+</ParamField>
+
+### Request body
+
+Same fields as [create account](#create-account). Only fields provided in the body are updated (unless `treatNullValueAsReset=true`).
+
+### Response
+
+`204 No Content`
+
+---
+
+## Get account timeline
+
+<br />
+
+`GET /1.0/kb/accounts/{accountId}/timeline`
+
+Returns the complete activity timeline for an account, including all bundles, subscriptions, invoices, and payments in a single response.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="parallel" type="boolean" default="false">
+  When `true`, Kill Bill fetches bundles, invoices, and payments concurrently. Reduces latency for accounts with many records.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an `AccountTimeline` object with `account`, `bundles`, `invoices`, and `payments` fields.
+
+---
+
+## List bundles for account
+
+<br />
+
+`GET /1.0/kb/accounts/{accountId}/bundles`
+
+Returns all subscription bundles associated with an account.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="externalKey" type="string">
+  Filter bundles by external key. Returns only bundles with the given key.
+</ParamField>
+
+<ParamField query="bundlesFilter" type="string">
+  Comma-separated list of bundle UUIDs to include. Useful to select a specific subset of bundles.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an array of [Bundle objects](/api-reference/bundles#bundle-object).
+
+---
+
+## List invoices for account
+
+<br />
+
+`GET /1.0/kb/accounts/{accountId}/invoices`
+
+Returns invoices for an account. Various query parameters control which invoices are included.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="startDate" type="string">
+  Include only invoices on or after this date (`YYYY-MM-DD`).
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Include only invoices on or before this date (`YYYY-MM-DD`).
+</ParamField>
+
+<ParamField query="unpaidInvoicesOnly" type="boolean" default="false">
+  When `true`, returns only invoices with an outstanding balance.
+</ParamField>
+
+<ParamField query="includeVoidedInvoices" type="boolean" default="false">
+  When `true`, includes voided invoices in the results.
+</ParamField>
+
+<ParamField query="invoicesFilter" type="string">
+  Comma-separated list of invoice UUIDs to include.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns an array of [Invoice objects](/api-reference/invoices#invoice-object).
+
+---
+
+## Pay all unpaid invoices
+
+<br />
+
+`POST /1.0/kb/accounts/{accountId}/invoicePayments`
+
+Triggers a payment attempt for every outstanding invoice on the account. Returns `204 No Content` when there is nothing to pay.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="paymentMethodId" type="string">
+  UUID of the payment method to charge. Defaults to the account's default payment method.
+</ParamField>
+
+<ParamField query="externalPayment" type="boolean" default="false">
+  When `true`, records the payment as an external payment (e.g., cash or wire transfer) without charging a payment plugin.
+</ParamField>
+
+<ParamField query="paymentAmount" type="number">
+  Override the amount to collect. Defaults to the total outstanding balance across all unpaid invoices.
+</ParamField>
+
+### Response
+
+`201 Created` on success, `204 No Content` when there is nothing outstanding.
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://localhost:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/invoicePayments"
+```
+
+---
+
+## Get overdue state
+
+<br />
+
+`GET /1.0/kb/accounts/{accountId}/overdue`
+
+Returns the current overdue (dunning) state for an account based on the tenant's overdue configuration.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Response
+
+<ResponseField name="name" type="string">
+  Name of the current overdue state as defined in the overdue configuration (e.g., `OD1`, `OD2`, `CLEAR`).
+</ResponseField>
+
+<ResponseField name="externalMessage" type="string">
+  Human-readable message associated with the current overdue state.
+</ResponseField>
+
+<ResponseField name="isBlockedBilling" type="boolean">
+  Whether billing is currently blocked for this account.
+</ResponseField>
+
+<ResponseField name="isBlockedEntitlement" type="boolean">
+  Whether entitlement (service access) is currently blocked for this account.
+</ResponseField>
+
+<ResponseField name="isClearState" type="boolean">
+  `true` when the account is not overdue.
+</ResponseField>
+
+---
+
+## Tags
+
+Kill Bill supports tagging accounts with system control tags (which affect billing behavior) and user-defined tags (for custom categorization).
+
+### Get tags
+
+`GET /1.0/kb/accounts/{accountId}/tags`
+
+<ParamField path="accountId" type="string" required>Account UUID.</ParamField>
+<ParamField query="includedDeleted" type="boolean" default="false">Include deleted tags.</ParamField>
+<ParamField query="audit" type="string" default="NONE">Audit log detail level.</ParamField>
+
+### Add tags
+
+`POST /1.0/kb/accounts/{accountId}/tags`
+
+Request body: a JSON array of tag definition UUIDs.
+
+### Remove tags
+
+`DELETE /1.0/kb/accounts/{accountId}/tags`
+
+<ParamField query="tagDef" type="string">Comma-separated list of tag definition UUIDs to remove.</ParamField>
+
+---
+
+## Custom fields
+
+Custom fields attach arbitrary key-value metadata to an account.
+
+### Get custom fields
+
+`GET /1.0/kb/accounts/{accountId}/customFields`
+
+<ParamField path="accountId" type="string" required>Account UUID.</ParamField>
+
+### Add custom fields
+
+`POST /1.0/kb/accounts/{accountId}/customFields`
+
+Request body: a JSON array of `{ "name": "...", "value": "..." }` objects.
+
+### Remove custom fields
+
+`DELETE /1.0/kb/accounts/{accountId}/customFields`
+
+<ParamField query="customField" type="string">Comma-separated list of custom field UUIDs to remove.</ParamField>
+
+---
+
+## Rebalance credit balance
+
+<br />
+
+`PUT /1.0/kb/accounts/{accountId}/cbaRebalancing`
+
+Applies any existing unused credit balance (CBA) against outstanding unpaid invoices. Kill Bill does this automatically during normal invoice generation, but this endpoint lets you trigger the rebalancing manually when needed.
+
+### Path parameters
+
+<ParamField path="accountId" type="string" required>
+  The Kill Bill UUID of the account.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+---
+
+## Account object
+
+The Account object is returned by all account retrieval endpoints.
+
+<ResponseField name="accountId" type="string">
+  Kill Bill UUID for the account.
+</ResponseField>
+
+<ResponseField name="externalKey" type="string">
+  Caller-supplied unique identifier.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Full name of the account holder.
+</ResponseField>
+
+<ResponseField name="firstNameLength" type="integer">
+  Length of the first name portion of `name`.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Primary email address.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  ISO 4217 currency code.
+</ResponseField>
+
+<ResponseField name="timeZone" type="string">
+  IANA time zone identifier.
+</ResponseField>
+
+<ResponseField name="billCycleDayLocal" type="integer">
+  Day of month on which recurring invoices are generated.
+</ResponseField>
+
+<ResponseField name="paymentMethodId" type="string">
+  UUID of the account's default payment method. `null` if no payment method has been added.
+</ResponseField>
+
+<ResponseField name="accountBalance" type="number">
+  Current outstanding balance. Only present when `accountWithBalance=true` is requested.
+</ResponseField>
+
+<ResponseField name="accountCBA" type="number">
+  Current credit balance adjustment. Only present when `accountWithBalanceAndCBA=true` is requested.
+</ResponseField>
+
+<ResponseField name="parentAccountId" type="string">
+  UUID of the parent account, if this is a child account.
+</ResponseField>
+
+<ResponseField name="isPaymentDelegatedToParent" type="boolean">
+  Whether payments are collected from the parent account.
+</ResponseField>
+
+<ResponseField name="referenceTime" type="string">
+  ISO 8601 timestamp that anchors the account's billing cycle calculations.
+</ResponseField>
+
+<ResponseField name="address1" type="string">Street address line 1.</ResponseField>
+<ResponseField name="address2" type="string">Street address line 2.</ResponseField>
+<ResponseField name="city" type="string">City.</ResponseField>
+<ResponseField name="state" type="string">State or province.</ResponseField>
+<ResponseField name="postalCode" type="string">Postal or ZIP code.</ResponseField>
+<ResponseField name="country" type="string">ISO 3166-1 alpha-2 country code.</ResponseField>
+<ResponseField name="locale" type="string">BCP 47 locale tag.</ResponseField>
+<ResponseField name="phone" type="string">Phone number.</ResponseField>
+<ResponseField name="company" type="string">Company or organization name.</ResponseField>
+<ResponseField name="notes" type="string">Free-text notes.</ResponseField>
+<ResponseField name="isMigrated" type="boolean">Whether this account was created via a data migration.</ResponseField>
+<ResponseField name="auditLogs" type="array">
+  Audit log entries. Only present when `audit` is set to `MINIMAL` or `FULL`.
+</ResponseField>

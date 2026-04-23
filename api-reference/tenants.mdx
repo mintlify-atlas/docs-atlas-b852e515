@@ -1,0 +1,449 @@
+---
+title: "Tenants API — multi-tenant configuration"
+description: "Create and manage Kill Bill tenants: configure API credentials, upload per-tenant properties and plugin configs, and register webhook notification callbacks."
+---
+
+Kill Bill is a fully multi-tenant platform. Every tenant is an isolated context with its own catalog, overdue configuration, plugin settings, and API key/secret pair. The Tenants API lets you provision new tenants and manage all per-tenant configuration — including plugin properties, payment state machine overrides, notification webhooks, and arbitrary key-value data.
+
+<Note>
+  Creating a tenant (`POST /1.0/kb/tenants`) does **not** require `X-Killbill-ApiKey` or `X-Killbill-ApiSecret` headers — the tenant does not exist yet, so there are no credentials to validate. All other tenant endpoints require both headers to identify the tenant context.
+</Note>
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/1.0/kb/tenants` | Create a new tenant |
+| `GET` | `/1.0/kb/tenants/{tenantId}` | Get a tenant by UUID |
+| `GET` | `/1.0/kb/tenants` | Get a tenant by API key |
+| `POST` | `/1.0/kb/tenants/{tenantId}/uploadPluginConfig/{pluginName}` | Upload plugin configuration |
+| `GET` | `/1.0/kb/tenants/{tenantId}/uploadPluginConfig/{pluginName}` | Retrieve plugin configuration |
+| `DELETE` | `/1.0/kb/tenants/{tenantId}/uploadPluginConfig/{pluginName}` | Delete plugin configuration |
+| `POST` | `/1.0/kb/tenants/{tenantId}/uploadPluginPaymentStateMachineConfig/{pluginName}` | Upload payment state machine config |
+| `GET` | `/1.0/kb/tenants/{tenantId}/uploadPluginPaymentStateMachineConfig/{pluginName}` | Retrieve payment state machine config |
+| `DELETE` | `/1.0/kb/tenants/{tenantId}/uploadPluginPaymentStateMachineConfig/{pluginName}` | Delete payment state machine config |
+| `POST` | `/1.0/kb/tenants/{tenantId}/uploadPerTenantConfig` | Upload per-tenant Kill Bill properties |
+| `GET` | `/1.0/kb/tenants/{tenantId}/uploadPerTenantConfig` | Retrieve per-tenant properties |
+| `DELETE` | `/1.0/kb/tenants/{tenantId}/uploadPerTenantConfig` | Delete per-tenant properties |
+| `POST` | `/1.0/kb/tenants/{tenantId}/registerNotificationCallback` | Register a webhook URL |
+| `GET` | `/1.0/kb/tenants/{tenantId}/registerNotificationCallback` | Retrieve registered webhook URL |
+| `DELETE` | `/1.0/kb/tenants/{tenantId}/registerNotificationCallback` | Delete webhook URL |
+| `POST` | `/1.0/kb/tenants/{tenantId}/userKeyValue/{keyName}` | Set an arbitrary key-value |
+| `GET` | `/1.0/kb/tenants/{tenantId}/userKeyValue/{keyName}` | Get an arbitrary key-value |
+| `DELETE` | `/1.0/kb/tenants/{tenantId}/userKeyValue/{keyName}` | Delete an arbitrary key-value |
+
+---
+
+## POST /1.0/kb/tenants — create a tenant
+
+Creates a new tenant and, by default, initializes an empty per-tenant catalog. The `apiKey` and `apiSecret` you provide become the credentials that identify this tenant in all subsequent requests via `X-Killbill-ApiKey` and `X-Killbill-ApiSecret`.
+
+<Warning>
+  Do not send `X-Killbill-ApiKey` or `X-Killbill-ApiSecret` headers when calling this endpoint. The tenant does not exist yet; Kill Bill authenticates only via HTTP Basic Auth (`admin:password`).
+</Warning>
+
+### Request body
+
+<ParamField body="apiKey" type="string" required>
+  The API key for the new tenant. Must be unique across all tenants in the Kill Bill instance.
+</ParamField>
+
+<ParamField body="apiSecret" type="string" required>
+  The API secret for the new tenant. Kill Bill stores a hash of this value.
+</ParamField>
+
+<ParamField body="externalKey" type="string">
+  An optional external identifier for the tenant (e.g. your own system's tenant ID). If omitted, Kill Bill does not set one.
+</ParamField>
+
+<ParamField query="useGlobalDefault" type="boolean">
+  Defaults to `false`. When `true`, the new tenant shares the global (system-level) catalog instead of getting its own empty catalog.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "apiKey": "acme-prod",
+    "apiSecret": "acme-prod-secret-change-me",
+    "externalKey": "acme-production-tenant"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/tenants"
+```
+
+Returns `HTTP 201 Created` with a `Location` header pointing to the new tenant resource. Returns `HTTP 409 Conflict` if the API key is already in use.
+
+<Expandable title="Example response">
+
+```json
+{
+  "tenantId": "c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b",
+  "externalKey": "acme-production-tenant",
+  "apiKey": "acme-prod",
+  "apiSecret": null
+}
+```
+
+The `apiSecret` is never returned after creation.
+
+</Expandable>
+
+---
+
+## GET /1.0/kb/tenants/{tenantId} — get tenant by UUID
+
+Retrieves tenant metadata by its internal UUID. The API secret is never returned.
+
+<ParamField path="tenantId" type="string (UUID)" required>
+  The UUID of the tenant to retrieve.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b"
+```
+
+Returns `HTTP 404 Not Found` if no tenant with the given UUID exists.
+
+---
+
+## GET /1.0/kb/tenants — get tenant by API key
+
+Looks up a tenant by its `apiKey` query parameter. Useful when you know the API key but not the internal UUID.
+
+<ParamField query="apiKey" type="string" required>
+  The tenant's API key.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/tenants?apiKey=acme-prod"
+```
+
+---
+
+## Plugin configuration
+
+Plugin configuration is stored as an opaque text blob (typically Java `.properties` format) and is scoped to a specific plugin name. When a plugin starts, it reads its configuration from this store rather than from a file on disk.
+
+### POST — upload plugin config
+
+<ParamField path="tenantId" type="string (UUID)" required>
+  The tenant UUID.
+</ParamField>
+
+<ParamField path="pluginName" type="string" required>
+  The plugin name as registered in Kill Bill (e.g. `killbill-stripe`).
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  -d 'org.killbill.billing.plugin.stripe.apiKey=sk_live_xxxxxxxxxxxxxxxxxxxxxxxx
+org.killbill.billing.plugin.stripe.webhookSecret=whsec_xxxxxxxxxxxxxxxxxxxxxxxx' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPluginConfig/killbill-stripe"
+```
+
+Returns `HTTP 201 Created`. Returns `HTTP 400 Bad Request` if the tenant UUID is invalid.
+
+### GET — retrieve plugin config
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPluginConfig/killbill-stripe"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "key": "PLUGIN_CONFIG_killbill-stripe",
+  "values": [
+    "org.killbill.billing.plugin.stripe.apiKey=sk_live_xxxxxxxxxxxxxxxxxxxxxxxx\norg.killbill.billing.plugin.stripe.webhookSecret=whsec_xxxxxxxxxxxxxxxxxxxxxxxx"
+  ]
+}
+```
+
+</Expandable>
+
+### DELETE — delete plugin config
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPluginConfig/killbill-stripe"
+```
+
+Returns `HTTP 204 No Content`.
+
+---
+
+## Plugin payment state machine config
+
+Payment plugins can provide a custom state machine definition that overrides Kill Bill's default payment flow. This is an advanced feature used to model complex payment provider workflows (e.g. authorization holds, partial captures).
+
+The endpoints follow the same pattern as plugin configuration:
+
+- `POST /1.0/kb/tenants/{tenantId}/uploadPluginPaymentStateMachineConfig/{pluginName}` — upload (body: `text/plain` state machine XML)
+- `GET /1.0/kb/tenants/{tenantId}/uploadPluginPaymentStateMachineConfig/{pluginName}` — retrieve
+- `DELETE /1.0/kb/tenants/{tenantId}/uploadPluginPaymentStateMachineConfig/{pluginName}` — delete
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  --data-binary @payment-state-machine.xml \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPluginPaymentStateMachineConfig/killbill-stripe"
+```
+
+---
+
+## Per-tenant Kill Bill properties
+
+You can override Kill Bill system properties on a per-tenant basis. The body is a Java-style `.properties` text block. These properties take precedence over the global `killbill.properties` file for requests in this tenant's context.
+
+### POST — upload per-tenant config
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  -d 'org.killbill.payment.retry.days=1,3,8
+org.killbill.invoice.maxNumberOfMonthsInFuture=36' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPerTenantConfig"
+```
+
+### GET — retrieve per-tenant config
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPerTenantConfig"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "key": "PER_TENANT_CONFIG",
+  "values": [
+    "org.killbill.payment.retry.days=1,3,8\norg.killbill.invoice.maxNumberOfMonthsInFuture=36"
+  ]
+}
+```
+
+</Expandable>
+
+### DELETE — delete per-tenant config
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/uploadPerTenantConfig"
+```
+
+---
+
+## Notification callbacks (webhooks)
+
+Kill Bill can push external events (subscription changes, payment outcomes, invoice generation, etc.) to your application via HTTP POST. You register a webhook URL as the notification callback for the tenant.
+
+### POST — register callback
+
+<ParamField query="cb" type="string" required>
+  The full URL that Kill Bill will POST events to (e.g. `https://your-app.example.com/killbill/events`).
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/registerNotificationCallback?cb=https%3A%2F%2Fyour-app.example.com%2Fkillbill%2Fevents"
+```
+
+Returns `HTTP 201 Created`.
+
+### GET — retrieve registered callback
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/registerNotificationCallback"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "key": "PUSH_NOTIFICATION_CB",
+  "values": [
+    "https://your-app.example.com/killbill/events"
+  ]
+}
+```
+
+</Expandable>
+
+### DELETE — delete callback
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/registerNotificationCallback"
+```
+
+### Webhook event format
+
+When Kill Bill fires a notification, it sends an HTTP POST to your callback URL with `Content-Type: application/json`. The body is a Kill Bill external event object:
+
+```json
+{
+  "eventType": "SUBSCRIPTION_PHASE",
+  "accountId": "8ab101b6-15e8-433b-b4f7-f79eeea3a6b4",
+  "subscriptionId": "7cd202a5-0d4f-3e8b-9c6a-1e5d0f2b4c3d",
+  "bundleId": "6bc101b4-0c3e-4d8b-8b5a-0d4c0e1a3b2c",
+  "requestedTransitionTime": "2024-06-01T00:00:00.000Z",
+  "effectiveTransitionTime": "2024-06-01T00:00:00.000Z",
+  "metaData": null
+}
+```
+
+<Info>
+  Your webhook endpoint must respond with `HTTP 2xx` within the configured timeout. If Kill Bill receives a non-2xx response or the request times out, it retries according to the configured retry schedule.
+</Info>
+
+---
+
+## User key-value store
+
+Each tenant has an arbitrary key-value store you can use to persist application-level configuration or state that you want Kill Bill to manage for you (so your application doesn't need its own config store).
+
+### POST — set a key-value
+
+<ParamField path="keyName" type="string" required>
+  The key name. Can contain slashes and other URL-safe characters.
+</ParamField>
+
+The request body is a plain-text string value.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  -d 'premium' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/userKeyValue/feature-flag/tier"
+```
+
+Returns `HTTP 201 Created`.
+
+### GET — retrieve a key-value
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/userKeyValue/feature-flag/tier"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "key": "feature-flag/tier",
+  "values": [
+    "premium"
+  ]
+}
+```
+
+</Expandable>
+
+### DELETE — delete a key-value
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: acme-prod" \
+  -H "X-Killbill-ApiSecret: acme-prod-secret-change-me" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/c8f4b5d2-1a3e-4f9c-8b7a-2d6e0f1c3a5b/userKeyValue/feature-flag/tier"
+```
+
+Returns `HTTP 204 No Content`.
+
+---
+
+## Tenant response schema
+
+<ResponseField name="tenantId" type="string (UUID)">
+  The internal Kill Bill UUID assigned to the tenant at creation time.
+</ResponseField>
+
+<ResponseField name="externalKey" type="string">
+  Optional external identifier. `null` if not set at creation.
+</ResponseField>
+
+<ResponseField name="apiKey" type="string">
+  The tenant's API key, used in the `X-Killbill-ApiKey` header.
+</ResponseField>
+
+<ResponseField name="apiSecret" type="string">
+  Always `null` in API responses. Kill Bill stores only a hash of the secret.
+</ResponseField>

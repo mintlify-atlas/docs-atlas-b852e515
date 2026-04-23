@@ -1,80 +1,271 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Get started with Kill Bill"
+description: "Deploy Kill Bill, create a tenant and catalog, and run your first subscription end-to-end using the REST API — in under 15 minutes."
 ---
 
-## Get started in three steps
+This guide walks you through deploying Kill Bill and making your first billing cycle: create a tenant, upload a product catalog, register a customer account, start a subscription, and trigger an invoice. Every step uses the real Kill Bill REST API at `http://localhost:8080`.
 
-Get your documentation site running locally and make your first customization.
+<Info>
+  All API calls require HTTP Basic Auth (`admin`/`password` by default) plus two tenant headers: `X-Killbill-ApiKey` and `X-Killbill-ApiSecret`. These are set after you create a tenant in step 2.
+</Info>
 
-### Step 1: Set up your local environment
+<Steps>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Step title="Deploy Kill Bill">
 
-### Step 2: Deploy your changes
+The fastest way to run Kill Bill locally is with Docker Compose. The stack includes Kill Bill, Kaui (the admin UI), and a MySQL database.
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```bash
+curl -O https://docs.killbill.io/latest/docker-compose.yml
+docker compose up -d
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+Wait for the server to report `Started` in the logs, then verify it is healthy:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash
+curl -u admin:password http://localhost:8080/1.0/kb/healthcheck
+```
 
-### Step 3: Go live
+A `200 OK` response confirms Kill Bill is ready.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+<Tip>
+  For production deployments on AWS, use the Kill Bill one-click deployer from the AWS Marketplace. See the [deployment guide](/guides/deployment) for details.
+</Tip>
 
-## Next steps
+</Step>
 
-Now that you have your docs running, explore these key features:
+<Step title="Create a tenant">
 
-<CardGroup cols={2}>
+Kill Bill is multi-tenant by default (`org.killbill.server.multitenant=true`). Every API call is scoped to a tenant identified by its API key and secret.
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: tutorial" \
+  -X POST \
+  -d '{
+    "apiKey": "bob",
+    "apiSecret": "lazar"
+  }' \
+  http://localhost:8080/1.0/kb/tenants
+```
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+The server responds with `201 Created` and a `Location` header containing the new tenant UUID.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  All subsequent requests must include `X-Killbill-ApiKey: bob` and `X-Killbill-ApiSecret: lazar` to be routed to this tenant.
 </Note>
+
+</Step>
+
+<Step title="Upload a product catalog">
+
+The catalog defines your products, plans, phases, and pricing. Kill Bill accepts catalogs in XML format uploaded to `POST /1.0/kb/catalog/xml`.
+
+The example below is a minimal catalog derived from Kill Bill's built-in `SpyCarAdvanced` catalog. It defines a `Standard` product with a 30-day free trial followed by a $100/month evergreen phase.
+
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<catalog xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="CatalogSchema.xsd">
+
+  <effectiveDate>2024-01-01T00:00:00+00:00</effectiveDate>
+  <catalogName>MyApp</catalogName>
+  <recurringBillingMode>IN_ADVANCE</recurringBillingMode>
+
+  <currencies>
+    <currency>USD</currency>
+  </currencies>
+
+  <products>
+    <product name="Standard">
+      <category>BASE</category>
+    </product>
+  </products>
+
+  <rules>
+    <changePolicy>
+      <changePolicyCase>
+        <policy>END_OF_TERM</policy>
+      </changePolicyCase>
+    </changePolicy>
+    <cancelPolicy>
+      <cancelPolicyCase>
+        <policy>END_OF_TERM</policy>
+      </cancelPolicyCase>
+    </cancelPolicy>
+  </rules>
+
+  <plans>
+    <plan name="standard-monthly">
+      <product>Standard</product>
+      <initialPhases>
+        <phase type="TRIAL">
+          <duration>
+            <unit>DAYS</unit>
+            <number>30</number>
+          </duration>
+          <fixed>
+            <fixedPrice/>
+          </fixed>
+        </phase>
+      </initialPhases>
+      <finalPhase type="EVERGREEN">
+        <duration>
+          <unit>UNLIMITED</unit>
+        </duration>
+        <recurring>
+          <billingPeriod>MONTHLY</billingPeriod>
+          <recurringPrice>
+            <price>
+              <currency>USD</currency>
+              <value>100.00</value>
+            </price>
+          </recurringPrice>
+        </recurring>
+      </finalPhase>
+    </plan>
+  </plans>
+
+  <priceLists>
+    <defaultPriceList name="DEFAULT">
+      <plans>
+        <plan>standard-monthly</plan>
+      </plans>
+    </defaultPriceList>
+  </priceLists>
+
+</catalog>
+```
+
+Save the XML to a file called `catalog.xml`, then upload it:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: tutorial" \
+  -H "Content-Type: text/xml" \
+  -X POST \
+  -d @catalog.xml \
+  http://localhost:8080/1.0/kb/catalog/xml
+```
+
+A `201 Created` response confirms the catalog is active for the tenant.
+
+</Step>
+
+<Step title="Create a customer account">
+
+An account represents a customer. It stores billing identity, currency, and time zone. Payment methods are attached to accounts separately.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: tutorial" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "name": "John Doe",
+    "email": "john.doe@example.com",
+    "currency": "USD",
+    "timeZone": "UTC",
+    "locale": "en_US"
+  }' \
+  http://localhost:8080/1.0/kb/accounts
+```
+
+The response is `201 Created` with a `Location` header like:
+
+```
+Location: http://localhost:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80
+```
+
+Save the account UUID — you will need it for the subscription and invoice steps.
+
+</Step>
+
+<Step title="Create a subscription">
+
+A subscription associates an account with a plan from the catalog. Kill Bill immediately places the subscription in its first phase — in this case the 30-day `TRIAL` phase at $0.
+
+Replace `<ACCOUNT_UUID>` with the UUID from the previous step.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: tutorial" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "accountId": "<ACCOUNT_UUID>",
+    "planName": "standard-monthly"
+  }' \
+  http://localhost:8080/1.0/kb/subscriptions
+```
+
+Kill Bill creates the subscription and, because the trial phase has a `$0` fixed price, immediately generates the first `$0` trial invoice. The `Location` header in the response contains the subscription UUID.
+
+<Note>
+  The subscription will automatically transition to the `EVERGREEN` phase ($100/month) after 30 days. Kill Bill schedules this phase change and the corresponding invoice generation via its internal notification queue.
+</Note>
+
+</Step>
+
+<Step title="Trigger an invoice">
+
+In production, invoices are generated automatically by Kill Bill's scheduler. During development you can trigger invoice generation manually to advance billing without waiting.
+
+Replace `<ACCOUNT_UUID>` with your account UUID and supply a `targetDate` in the `EVERGREEN` phase (any date after the 30-day trial ends).
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: tutorial" \
+  -X POST \
+  "http://localhost:8080/1.0/kb/invoices?accountId=<ACCOUNT_UUID>&targetDate=2024-03-01"
+```
+
+Kill Bill generates a new invoice for the `EVERGREEN` phase and responds with `201 Created` plus a `Location` header pointing to the new invoice.
+
+Retrieve the invoice to confirm:
+
+```bash
+curl -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  http://localhost:8080/1.0/kb/accounts/<ACCOUNT_UUID>/invoices
+```
+
+You will see an invoice with `amount: 100.00` in the `COMMITTED` state, ready for payment collection.
+
+</Step>
+
+</Steps>
+
+## What's next
+
+You now have a working Kill Bill installation with a subscription going through its lifecycle. From here you can:
+
+<Columns cols={2}>
+  <Card title="Core concepts" icon="book" href="/concepts">
+    Understand the full data model before building your integration.
+  </Card>
+  <Card title="Product catalog" icon="tag" href="/guides/catalog">
+    Model complex pricing: add-ons, discounts, usage tiers, and multiple price lists.
+  </Card>
+  <Card title="Payment plugins" icon="credit-card" href="/guides/payments">
+    Connect a payment gateway to collect payments automatically on invoice creation.
+  </Card>
+  <Card title="API reference" icon="code" href="/api-reference/overview">
+    Explore all available REST endpoints with full request and response schemas.
+  </Card>
+</Columns>

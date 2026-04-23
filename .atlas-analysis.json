@@ -1,0 +1,137 @@
+{
+  "projectType": "api-service",
+  "projectName": "Kill Bill",
+  "projectDescription": "Open-source subscription billing and payments platform with a comprehensive REST API for managing subscriptions, invoices, payments, and multi-tenant billing infrastructure.",
+  "theme": "sequoia",
+  "primaryColor": "#48a8cf",
+  "lightColor": "#c6d95e",
+  "darkColor": "#2c3454",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "concepts"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "guides/catalog",
+              "guides/subscriptions",
+              "guides/invoicing",
+              "guides/payments",
+              "guides/overdue"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "guides/multi-tenancy",
+              "guides/usage-billing",
+              "guides/plugins",
+              "guides/security"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "guides/deployment",
+              "guides/configuration",
+              "guides/monitoring"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api-reference/overview",
+              "api-reference/authentication"
+            ]
+          },
+          {
+            "group": "Accounts & Billing",
+            "pages": [
+              "api-reference/accounts",
+              "api-reference/subscriptions",
+              "api-reference/bundles",
+              "api-reference/invoices",
+              "api-reference/credits"
+            ]
+          },
+          {
+            "group": "Payments",
+            "pages": [
+              "api-reference/payments",
+              "api-reference/payment-methods",
+              "api-reference/payment-gateway",
+              "api-reference/transactions"
+            ]
+          },
+          {
+            "group": "Catalog & Configuration",
+            "pages": [
+              "api-reference/catalog",
+              "api-reference/overdue",
+              "api-reference/usage",
+              "api-reference/tenants"
+            ]
+          },
+          {
+            "group": "Platform",
+            "pages": [
+              "api-reference/tags",
+              "api-reference/custom-fields",
+              "api-reference/security",
+              "api-reference/admin"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Subscription lifecycle management (create, change, cancel, pause/resume) with support for trials, add-ons, and plan changes",
+    "Automatic invoice generation based on subscription events, billing cycle day, and usage data",
+    "Plugin-based payment processing supporting authorize, capture, purchase, void, refund, and chargeback transactions",
+    "XML-driven versioned product catalog with support for recurring, fixed, and usage-based pricing",
+    "Overdue state machine for configurable dunning and collections workflows",
+    "Full multi-tenancy with per-tenant catalog, overdue config, payment state machines, and plugin configurations",
+    "Usage-based (metered) billing with flexible tiered pricing blocks",
+    "Comprehensive audit logging and history for every entity change",
+    "RBAC security with Apache Shiro supporting JDBC, LDAP, Okta, and Auth0",
+    "OSGI plugin system for payment gateways, catalog providers, tax, invoice, and notification integrations",
+    "Hosted Payment Page (HPP) support for redirecting customers to gateway payment forms",
+    "Parent-child account hierarchy for hierarchical billing and credit transfer"
+  ],
+  "publicApiSurface": [
+    "GET/POST/PUT/DELETE /1.0/kb/accounts — account management",
+    "GET/POST/PUT/DELETE /1.0/kb/subscriptions — subscription lifecycle",
+    "GET/POST /1.0/kb/bundles — subscription bundle management",
+    "GET/POST/PUT/DELETE /1.0/kb/invoices — invoice generation and management",
+    "GET/POST /1.0/kb/payments — payment processing (authorize, capture, refund, void, chargeback)",
+    "GET/POST/PUT/DELETE /1.0/kb/paymentMethods — payment method storage",
+    "POST /1.0/kb/paymentGateways/hosted/form — hosted payment page form descriptor",
+    "POST /1.0/kb/paymentGateways/notification/{pluginName} — gateway webhook processing",
+    "GET/POST/DELETE /1.0/kb/catalog — product catalog management",
+    "POST /1.0/kb/catalog/simplePlan — create simple plan programmatically",
+    "GET/POST /1.0/kb/overdue — overdue configuration",
+    "GET/POST /1.0/kb/usages — usage recording and retrieval",
+    "GET/POST/DELETE /1.0/kb/tenants — multi-tenant management",
+    "GET/POST/PUT/DELETE /1.0/kb/security — RBAC user and role management",
+    "GET/POST/DELETE /1.0/kb/tags — entity tagging",
+    "GET/POST/DELETE /1.0/kb/customFields — custom metadata on any entity",
+    "GET/PUT /1.0/kb/admin — admin operations (cache, payment state fix, healthcheck)",
+    "GET/POST /1.0/kb/nodesInfo — cluster node and plugin management",
+    "GET /1.0/kb/export/{accountId} — raw account data export"
+  ]
+}

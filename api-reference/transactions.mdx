@@ -1,0 +1,513 @@
+---
+title: "Payment Transactions API — transaction operations"
+description: "Reference for Kill Bill payment transaction endpoints: look up by UUID or external key, notify pending state changes, and manage invoice-linked payments."
+---
+
+The Transactions API provides direct access to individual **PaymentTransaction** records and to invoice-linked payments through the **InvoicePayment** resource. Understanding the distinction between these two concepts is essential for working with this API.
+
+## Payments vs. payment transactions
+
+A **Payment** is the top-level container for a series of related gateway operations on a single payment instrument. A **PaymentTransaction** is one individual operation within that payment — an authorize, capture, refund, or other transaction type. One payment can have many transactions.
+
+| Concept            | UUID field       | External key field           | Where used                                     |
+|--------------------|------------------|------------------------------|------------------------------------------------|
+| Payment            | `paymentId`      | `paymentExternalKey`         | Top-level billing entity                       |
+| PaymentTransaction | `transactionId`  | `transactionExternalKey`     | Individual gateway call within a payment       |
+
+When you look up a transaction by its UUID or external key, Kill Bill returns the **parent Payment** object (with all of its transactions embedded) rather than an isolated transaction record. This gives you the full context of the payment alongside the specific transaction you searched for.
+
+## Invoice payments
+
+An **InvoicePayment** is a join between an Invoice and a Payment — it records which invoice a payment was made against. The `/1.0/kb/invoicePayments` path exposes read and write operations that are invoice-aware: refunds through this path can trigger invoice adjustments, and chargebacks update invoice balances accordingly.
+
+<Note>
+All `/1.0/kb/invoicePayments` endpoints use the same `paymentId` (UUID of the Payment) as their path parameter — not a separate invoice payment UUID.
+</Note>
+
+---
+
+## Retrieve the parent payment by transaction ID
+
+```
+GET /1.0/kb/paymentTransactions/{transactionId}
+```
+
+Returns the `Payment` object that contains the transaction identified by `transactionId`. This is the standard lookup when you have a transaction UUID (e.g., from a webhook or a prior API response).
+
+**Path parameters**
+
+<ParamField path="transactionId" type="string" required>
+  UUID of the payment transaction.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata in each transaction within the parent payment.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records in the parent payment.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — parent `Payment` object with all transactions. `404` — transaction not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/paymentTransactions/208d38df-8d5a-4e20-89df-15db4b3516b4"
+```
+
+---
+
+## Retrieve the parent payment by transaction external key
+
+```
+GET /1.0/kb/paymentTransactions?transactionExternalKey={transactionExternalKey}
+```
+
+Returns the parent `Payment` object using the client-assigned `transactionExternalKey` of one of its transactions.
+
+**Query parameters**
+
+<ParamField query="transactionExternalKey" type="string" required>
+  The transaction's external key.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — parent `Payment` object. `404` — not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/paymentTransactions?transactionExternalKey=txn-purchase-001"
+```
+
+---
+
+## Mark a pending transaction as succeeded or failed
+
+```
+POST /1.0/kb/paymentTransactions/{transactionId}
+```
+
+Notifies Kill Bill of the final state for a `PENDING` transaction — one that was submitted to the gateway but whose outcome was not immediately known. This endpoint is used in asynchronous payment flows (3DS redirect, ACH/bank transfers, PayPal redirect) where the gateway posts the result back to Kill Bill after the customer completes the flow.
+
+**Path parameters**
+
+<ParamField path="transactionId" type="string" required>
+  UUID of the pending transaction to update.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+**Request body**
+
+<ParamField body="paymentId" type="string" required>
+  UUID of the parent payment.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  Final transaction status. Pass `SUCCESS` if the gateway confirmed payment, or `FAILURE` if the payment was declined or cancelled.
+</ParamField>
+
+**Responses:** `201 Created` — redirects to the updated parent payment. `400` — missing `paymentId` or `status`. `404` — transaction or account not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/paymentTransactions/208d38df-8d5a-4e20-89df-15db4b3516b4" \
+  -d '{
+    "paymentId": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+    "status": "SUCCESS"
+  }'
+```
+
+<Info>
+Once a transaction reaches `SUCCESS` or `FAILURE`, calling this endpoint again is a no-op — Kill Bill detects the terminal state and returns `204 No Content` without modifying any data.
+</Info>
+
+---
+
+## Transaction fields reference
+
+<ResponseField name="transactionId" type="string">
+  Kill Bill-assigned UUID for this transaction.
+</ResponseField>
+
+<ResponseField name="transactionExternalKey" type="string">
+  Client-assigned idempotency key. Submitting the same key a second time returns the existing transaction.
+</ResponseField>
+
+<ResponseField name="paymentId" type="string">
+  UUID of the parent payment.
+</ResponseField>
+
+<ResponseField name="paymentExternalKey" type="string">
+  External key of the parent payment.
+</ResponseField>
+
+<ResponseField name="transactionType" type="string">
+  One of `AUTHORIZE`, `CAPTURE`, `PURCHASE`, `VOID`, `REFUND`, `CHARGEBACK`, `CHARGEBACK_REVERSAL`, `CREDIT`.
+</ResponseField>
+
+<ResponseField name="amount" type="number">
+  Requested transaction amount.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  ISO 4217 requested currency.
+</ResponseField>
+
+<ResponseField name="effectiveDate" type="string">
+  ISO 8601 date-time of the transaction.
+</ResponseField>
+
+<ResponseField name="processedAmount" type="number">
+  Amount actually processed by the gateway (may differ from `amount` due to currency conversion or partial captures).
+</ResponseField>
+
+<ResponseField name="processedCurrency" type="string">
+  Currency actually processed by the gateway.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Transaction status: `SUCCESS`, `FAILURE`, `PENDING`, `UNKNOWN`, or `PAYMENT_FAILURE`.
+</ResponseField>
+
+<ResponseField name="gatewayErrorCode" type="string">
+  Gateway-provided error code when the transaction is declined or errors. `null` on success.
+</ResponseField>
+
+<ResponseField name="gatewayErrorMsg" type="string">
+  Human-readable gateway error message. `null` on success.
+</ResponseField>
+
+<ResponseField name="firstPaymentReferenceId" type="string">
+  Primary gateway reference ID (e.g., Stripe `charge_id`, Braintree transaction ID).
+</ResponseField>
+
+<ResponseField name="secondPaymentReferenceId" type="string">
+  Secondary gateway reference, if the gateway provides one.
+</ResponseField>
+
+<ResponseField name="properties" type="array">
+  Plugin-provided key-value pairs with gateway-specific metadata.
+</ResponseField>
+
+---
+
+## Invoice payment endpoints
+
+The following endpoints operate on **InvoicePayments** — payments that are linked to specific invoices. They are invoice-aware: refunds can generate invoice adjustments and chargebacks update invoice balances.
+
+### Retrieve an invoice payment
+
+```
+GET /1.0/kb/invoicePayments/{paymentId}
+```
+
+Returns an `InvoicePayment` object — the standard `Payment` object augmented with the `invoiceId` of the invoice this payment settled.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — `InvoicePayment` object. `400` — invalid payment ID. `404` — payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/invoicePayments/8fe697d4-2c25-482c-aa45-f6cd5a48186d"
+```
+
+<Expandable title="Example response">
+```json
+{
+  "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+  "paymentId": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+  "paymentNumber": "325",
+  "paymentExternalKey": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+  "authAmount": 0,
+  "capturedAmount": 0,
+  "purchasedAmount": 49.99,
+  "refundedAmount": 0,
+  "creditedAmount": 0,
+  "currency": "USD",
+  "paymentMethodId": "916619a4-02bb-4d3d-b3da-2584ac897b19",
+  "transactions": [
+    {
+      "transactionId": "208d38df-8d5a-4e20-89df-15db4b3516b4",
+      "transactionType": "PURCHASE",
+      "amount": 49.99,
+      "currency": "USD",
+      "status": "SUCCESS"
+    }
+  ],
+  "targetInvoiceId": "d3ae8ab3-9e62-4a28-8b0d-e6e5a0e9fcb3"
+}
+```
+</Expandable>
+
+---
+
+### Refund an invoice payment with optional invoice adjustment
+
+```
+POST /1.0/kb/invoicePayments/{paymentId}/refunds
+```
+
+Issues a refund against an invoice payment. Unlike the standard refund endpoint (`POST /1.0/kb/payments/{paymentId}/refunds`), this endpoint can optionally create an invoice adjustment to credit the corresponding invoice line items when `isAdjusted` is set to `true`.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment to refund.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="externalPayment" type="boolean" default="false">
+  If `true`, issues the refund as an external (offline) credit rather than submitting it to the gateway. Useful for manual refunds by check or wire transfer.
+</ParamField>
+
+<ParamField query="paymentMethodId" type="string">
+  UUID of the payment method to use for the external refund (when `externalPayment=true`).
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body** — `InvoicePaymentTransaction`
+
+<ParamField body="amount" type="number">
+  Refund amount. If omitted, the full payment amount is refunded.
+</ParamField>
+
+<ParamField body="currency" type="string">
+  ISO 4217 currency code.
+</ParamField>
+
+<ParamField body="isAdjusted" type="boolean">
+  If `true`, Kill Bill generates invoice adjustment items on the original invoice to credit the refunded amount. Without this flag, the refund is purely a payment-level operation.
+</ParamField>
+
+<ParamField body="adjustments" type="array">
+  When `isAdjusted=true`, an optional list of specific invoice items to adjust. If empty and `isAdjusted=true`, Kill Bill adjusts the entire invoice proportionally.
+
+  ```json
+  [
+    { "invoiceItemId": "a1b2c3d4-...", "amount": 29.99 },
+    { "invoiceItemId": "e5f6a7b8-...", "amount": 20.00 }
+  ]
+  ```
+</ParamField>
+
+<ParamField body="transactionExternalKey" type="string">
+  Idempotency key for this refund transaction.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Override for the refund effective date.
+</ParamField>
+
+**Responses:** `201 Created` — redirects to the updated `InvoicePayment`. `400` — invalid payment ID. `404` — account or payment not found.
+
+<Tabs>
+  <Tab title="Full refund with adjustment">
+    ```bash
+    curl -v -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/invoicePayments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/refunds" \
+      -d '{
+        "amount": 49.99,
+        "isAdjusted": true,
+        "transactionExternalKey": "txn-refund-adj-001"
+      }'
+    ```
+  </Tab>
+  <Tab title="Partial refund with item adjustments">
+    ```bash
+    curl -v -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/invoicePayments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/refunds" \
+      -d '{
+        "amount": 29.99,
+        "isAdjusted": true,
+        "adjustments": [
+          { "invoiceItemId": "a1b2c3d4-0000-0000-0000-000000000001", "amount": 29.99 }
+        ],
+        "transactionExternalKey": "txn-partial-refund-001"
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+### Record a chargeback on an invoice payment
+
+```
+POST /1.0/kb/invoicePayments/{paymentId}/chargebacks
+```
+
+Records a chargeback against an invoice payment. Kill Bill creates a `CHARGEBACK` transaction and adjusts the invoice balance to reflect the disputed amount.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment being charged back.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body** — `InvoicePaymentTransaction`
+
+<ParamField body="amount" type="number" required>
+  Chargeback amount.
+</ParamField>
+
+<ParamField body="currency" type="string">
+  ISO 4217 currency code. Defaults to account currency.
+</ParamField>
+
+<ParamField body="transactionExternalKey" type="string">
+  Idempotency key for this chargeback transaction. If omitted, Kill Bill generates one automatically.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Date the chargeback was received.
+</ParamField>
+
+**Responses:** `201 Created` — redirects to the updated `InvoicePayment`. `400` — missing amount or invalid payment ID. `404` — account or payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/invoicePayments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/chargebacks" \
+  -d '{
+    "amount": 49.99,
+    "transactionExternalKey": "txn-cb-inv-001"
+  }'
+```
+
+---
+
+### Record a chargeback reversal on an invoice payment
+
+```
+POST /1.0/kb/invoicePayments/{paymentId}/chargebackReversals
+```
+
+Reverses a chargeback that was previously recorded against an invoice payment, typically when the dispute is resolved in the merchant's favor. The `transactionExternalKey` of the original chargeback transaction is required.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment that holds the chargeback to reverse.
+</ParamField>
+
+**Request body** — `InvoicePaymentTransaction`
+
+<ParamField body="transactionExternalKey" type="string" required>
+  External key of the original chargeback transaction being reversed.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Date the reversal was resolved.
+</ParamField>
+
+**Responses:** `201 Created` — redirects to the updated `InvoicePayment`. `400` — missing `transactionExternalKey`. `404` — account or payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/invoicePayments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/chargebackReversals" \
+  -d '{ "transactionExternalKey": "txn-cb-inv-001" }'
+```
+
+---
+
+## Choosing between `/payments` and `/invoicePayments`
+
+<Tabs>
+  <Tab title="Use /payments when">
+    - You initiated the payment directly via the Payments API (not via invoice auto-pay).
+    - You want a standalone refund that does not affect any invoice balance.
+    - You are recording a chargeback on a payment that was not tied to an invoice.
+    - You need the full set of transaction operations (authorize, capture, void, etc.).
+  </Tab>
+  <Tab title="Use /invoicePayments when">
+    - The payment was created by Kill Bill's invoicing engine (auto-pay or manual pay invoice).
+    - You need a refund that also credits the corresponding invoice items (`isAdjusted=true`).
+    - You are recording a chargeback that should reopen the invoice balance for collection.
+    - You want to retrieve the `targetInvoiceId` alongside payment data.
+  </Tab>
+</Tabs>

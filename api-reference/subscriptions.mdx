@@ -1,0 +1,556 @@
+---
+title: "Subscriptions API — lifecycle management"
+description: "Create, change, cancel, pause, and resume Kill Bill subscriptions and manage their billing cycle day, quantity, and plan transitions."
+---
+
+A subscription (also called an entitlement) binds a customer account to a catalog plan. Kill Bill distinguishes between two independent axes: the **entitlement** axis (whether the customer has access to the service) and the **billing** axis (when billing starts and stops). Most operations accept policy parameters that let you control which axis is affected and when the change takes effect.
+
+<Note>
+  Subscriptions are always created inside a bundle. When you create a single subscription, Kill Bill automatically creates a bundle to contain it. A bundle can hold one `BASE` subscription and any number of `ADD_ON` subscriptions.
+</Note>
+
+---
+
+## Get subscription by UUID
+
+<br />
+
+`GET /1.0/kb/subscriptions/{subscriptionId}`
+
+Retrieves a single subscription by its Kill Bill UUID.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level. One of `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+### Response
+
+Returns a [Subscription object](#subscription-object).
+
+---
+
+## Get subscription by external key
+
+<br />
+
+`GET /1.0/kb/subscriptions`
+
+Retrieves a single subscription by its caller-assigned external key.
+
+### Query parameters
+
+<ParamField query="externalKey" type="string" required>
+  The caller-assigned external key for the subscription.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log detail level.
+</ParamField>
+
+### Response
+
+Returns a [Subscription object](#subscription-object).
+
+---
+
+## Create subscription
+
+<br />
+
+`POST /1.0/kb/subscriptions`
+
+Creates a new entitlement for a customer account. Kill Bill will create a new bundle for the subscription unless you provide an existing `bundleId`.
+
+### Query parameters
+
+<ParamField query="entitlementDate" type="string">
+  ISO 8601 date or date-time when entitlement (service access) should start. Defaults to today in the account's time zone.
+</ParamField>
+
+<ParamField query="billingDate" type="string">
+  ISO 8601 date or date-time when billing should start. Defaults to `entitlementDate`.
+</ParamField>
+
+<ParamField query="renameKeyIfExistsAndUnused" type="boolean" default="true">
+  When `true`, if the requested `bundleExternalKey` already exists on a bundle with no active subscriptions, that bundle is renamed and a new bundle is created with the requested key.
+</ParamField>
+
+<ParamField query="callCompletion" type="boolean" default="false">
+  When `true`, the request blocks until the first invoice and payment attempt have been processed (up to `callTimeoutSec` seconds). Useful for synchronous integrations.
+</ParamField>
+
+<ParamField query="callTimeoutSec" type="integer" default="3">
+  Maximum seconds to wait when `callCompletion=true`.
+</ParamField>
+
+### Request body
+
+<ParamField body="accountId" type="string" required>
+  UUID of the account to which the subscription belongs.
+</ParamField>
+
+<ParamField body="planName" type="string">
+  Name of the catalog plan to subscribe to (e.g., `standard-monthly`). Provide either `planName` or the combination of `productName`, `billingPeriod`, and `priceList`.
+</ParamField>
+
+<ParamField body="productName" type="string">
+  Catalog product name. Required when `planName` is not supplied.
+</ParamField>
+
+<ParamField body="productCategory" type="string">
+  Product category: `BASE` or `ADD_ON`. Required when `planName` is not supplied.
+</ParamField>
+
+<ParamField body="billingPeriod" type="string">
+  Billing frequency: `MONTHLY`, `ANNUAL`, `QUARTERLY`, `WEEKLY`, `DAILY`, or `NO_BILLING_PERIOD`. Required when `planName` is not supplied.
+</ParamField>
+
+<ParamField body="priceList" type="string">
+  Catalog price list name (e.g., `DEFAULT`). Required when `planName` is not supplied.
+</ParamField>
+
+<ParamField body="externalKey" type="string">
+  Caller-assigned unique identifier for this subscription.
+</ParamField>
+
+<ParamField body="bundleId" type="string">
+  UUID of an existing bundle to add this subscription to. Supply this when adding an `ADD_ON` subscription to an existing `BASE` subscription.
+</ParamField>
+
+<ParamField body="bundleExternalKey" type="string">
+  Caller-assigned external key for the bundle that will contain this subscription.
+</ParamField>
+
+<ParamField body="billCycleDayLocal" type="integer">
+  Override the account-level billing cycle day for this subscription.
+</ParamField>
+
+<ParamField body="quantity" type="integer">
+  Quantity of units for usage-based pricing. Defaults to `1`.
+</ParamField>
+
+<ParamField body="priceOverrides" type="array">
+  Per-phase price overrides. Each element is an object with `planName`, `phaseName`, `phaseType`, `fixedPrice`, and `recurringPrice`.
+</ParamField>
+
+### Response
+
+`201 Created` — Returns a `Location` header pointing to the newly created subscription.
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+    "planName": "standard-monthly",
+    "externalKey": "sub-001",
+    "bundleExternalKey": "bundle-001"
+  }' \
+  "http://localhost:8080/1.0/kb/subscriptions"
+```
+
+---
+
+## Create subscription with add-ons
+
+<br />
+
+`POST /1.0/kb/subscriptions/createSubscriptionWithAddOns`
+
+Creates a `BASE` subscription and one or more `ADD_ON` subscriptions atomically in a single bundle. The request body is an array of subscription objects; the first element must be the `BASE` subscription.
+
+### Query parameters
+
+Same as [create subscription](#create-subscription).
+
+### Request body
+
+An array of [subscription objects](#subscription-object). All elements must share the same `accountId`.
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '[
+    {
+      "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+      "planName": "standard-monthly",
+      "externalKey": "sub-base-001"
+    },
+    {
+      "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+      "planName": "storage-addon-monthly",
+      "externalKey": "sub-addon-001"
+    }
+  ]' \
+  "http://localhost:8080/1.0/kb/subscriptions/createSubscriptionWithAddOns"
+```
+
+---
+
+## Change plan
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}`
+
+Changes the plan for an existing subscription (upgrade, downgrade, or cross-grade). The change can be immediate or deferred to the end of the current billing period.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which the plan change should take effect. Mutually exclusive with `billingPolicy`.
+</ParamField>
+
+<ParamField query="billingPolicy" type="string">
+  Controls when billing for the new plan starts. Mutually exclusive with `requestedDate`.
+
+  | Value | Description |
+  |---|---|
+  | `IMMEDIATE` | The change takes effect and billing switches immediately. |
+  | `END_OF_TERM` | The change takes effect at the end of the current billing period. |
+  | `START_OF_TERM` | The change takes effect at the start of the next billing period. |
+</ParamField>
+
+<ParamField query="callCompletion" type="boolean" default="false">
+  Block until invoice and payment processing completes.
+</ParamField>
+
+### Request body
+
+A [Subscription object](#subscription-object) containing the new `planName` (or `productName`, `billingPeriod`, and `priceList`).
+
+---
+
+## Cancel subscription
+
+<br />
+
+`DELETE /1.0/kb/subscriptions/{subscriptionId}`
+
+Cancels an active subscription. By default the cancellation takes effect immediately. Use `entitlementPolicy` and `billingPolicy` to control the effective dates independently.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription to cancel.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which both entitlement and billing should end. Cannot be combined with `entitlementPolicy` or `billingPolicy`.
+</ParamField>
+
+<ParamField query="entitlementPolicy" type="string">
+  When service access should be revoked. `IMMEDIATE` removes access right away; `END_OF_TERM` keeps access until the end of the period.
+</ParamField>
+
+<ParamField query="billingPolicy" type="string">
+  When billing should stop. `IMMEDIATE` stops billing now; `END_OF_TERM` bills through the end of the period.
+</ParamField>
+
+<ParamField query="useRequestedDateForBilling" type="boolean" default="false">
+  When `true` and `requestedDate` is supplied, uses the same date for billing end as for entitlement end.
+</ParamField>
+
+<ParamField query="callCompletion" type="boolean" default="false">
+  Block until processing completes.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+```bash Example request
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://localhost:8080/1.0/kb/subscriptions/2ad52f53-85ae-408a-9879-32a7e59dd03d?billingPolicy=END_OF_TERM"
+```
+
+---
+
+## Uncancel subscription
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}/uncancel`
+
+Reverses a pending cancellation that has not yet taken effect. Has no effect if the subscription is already cancelled.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+---
+
+## Undo pending plan change
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}/undoChangePlan`
+
+Reverts a pending plan change that has been scheduled but not yet applied. Has no effect if no pending change exists.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+---
+
+## Pause subscription
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}/pause`
+
+Pauses a single subscription, blocking both entitlement and billing as of the requested date.
+
+<Warning>
+  To pause all subscriptions in a bundle at once, use [pause bundle](/api-reference/bundles#pause-bundle) instead.
+</Warning>
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which to apply the pause. Defaults to today.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+---
+
+## Resume subscription
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}/resume`
+
+Resumes a previously paused subscription as of the requested date.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date on which to resume. Defaults to today.
+</ParamField>
+
+### Response
+
+`204 No Content`
+
+---
+
+## Update billing cycle day
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}/bcd`
+
+Changes the billing cycle day (BCD) for the subscription. The new BCD takes effect on the `effectiveFromDate`.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="effectiveFromDate" type="string">
+  ISO 8601 date from which the new BCD should apply. Defaults to the next renewal date.
+</ParamField>
+
+<ParamField query="forceNewBcdWithPastEffectiveDate" type="boolean" default="false">
+  When `true`, allows setting a BCD effective date in the past.
+</ParamField>
+
+### Request body
+
+A partial [Subscription object](#subscription-object) containing only `billCycleDayLocal`.
+
+```json
+{ "billCycleDayLocal": 15 }
+```
+
+### Response
+
+`204 No Content`
+
+---
+
+## Update quantity
+
+<br />
+
+`PUT /1.0/kb/subscriptions/{subscriptionId}/quantity`
+
+Updates the quantity associated with a subscription. Useful for seat-based or unit-based pricing.
+
+### Path parameters
+
+<ParamField path="subscriptionId" type="string" required>
+  The Kill Bill UUID of the subscription.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="effectiveFromDate" type="string">
+  ISO 8601 date from which the new quantity should apply.
+</ParamField>
+
+<ParamField query="forceNewQuantityWithPastEffectiveDate" type="boolean" default="false">
+  When `true`, allows setting an effective date in the past.
+</ParamField>
+
+### Request body
+
+A partial [Subscription object](#subscription-object) containing only `quantity`.
+
+```json
+{ "quantity": 5 }
+```
+
+### Response
+
+`204 No Content`
+
+---
+
+## Subscription object
+
+<ResponseField name="subscriptionId" type="string">
+  Kill Bill UUID for the subscription.
+</ResponseField>
+
+<ResponseField name="accountId" type="string">
+  UUID of the account that owns the subscription.
+</ResponseField>
+
+<ResponseField name="bundleId" type="string">
+  UUID of the bundle containing this subscription.
+</ResponseField>
+
+<ResponseField name="bundleExternalKey" type="string">
+  External key of the containing bundle.
+</ResponseField>
+
+<ResponseField name="externalKey" type="string">
+  Caller-assigned external key for this subscription.
+</ResponseField>
+
+<ResponseField name="planName" type="string">
+  Name of the currently active catalog plan.
+</ResponseField>
+
+<ResponseField name="productName" type="string">
+  Name of the catalog product.
+</ResponseField>
+
+<ResponseField name="productCategory" type="string">
+  `BASE` or `ADD_ON`.
+</ResponseField>
+
+<ResponseField name="billingPeriod" type="string">
+  Current billing period (e.g., `MONTHLY`, `ANNUAL`).
+</ResponseField>
+
+<ResponseField name="phaseType" type="string">
+  Current plan phase type: `TRIAL`, `DISCOUNT`, `FIXEDTERM`, or `EVERGREEN`.
+</ResponseField>
+
+<ResponseField name="priceList" type="string">
+  Name of the active price list.
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Current entitlement state: `PENDING`, `ACTIVE`, `BLOCKED`, or `CANCELLED`.
+</ResponseField>
+
+<ResponseField name="startDate" type="string">
+  ISO 8601 date-time when entitlement started.
+</ResponseField>
+
+<ResponseField name="billingStartDate" type="string">
+  ISO 8601 date-time when billing started.
+</ResponseField>
+
+<ResponseField name="billingEndDate" type="string">
+  ISO 8601 date-time when billing ends (set on cancellation).
+</ResponseField>
+
+<ResponseField name="cancelledDate" type="string">
+  ISO 8601 date-time when entitlement was or will be cancelled.
+</ResponseField>
+
+<ResponseField name="chargedThroughDate" type="string">
+  ISO 8601 local date through which the subscription has been invoiced.
+</ResponseField>
+
+<ResponseField name="billCycleDayLocal" type="integer">
+  Day of month on which the subscription renews.
+</ResponseField>
+
+<ResponseField name="quantity" type="integer">
+  Current quantity.
+</ResponseField>
+
+<ResponseField name="events" type="array">
+  Ordered list of subscription lifecycle events (plan changes, phase transitions, pauses, cancellations).
+</ResponseField>
+
+<ResponseField name="prices" type="array">
+  Per-phase pricing information for the current plan and the account's currency.
+</ResponseField>

@@ -1,0 +1,272 @@
+---
+title: "Configuring Kill Bill properties"
+description: "Understand Kill Bill's property system, configure database connections, catalog, bus queues, and override settings per tenant using the API."
+---
+
+Kill Bill is configured through a flat Java properties file where every key is namespaced under `org.killbill.*`. Properties are loaded at startup from the file referenced by the `org.killbill.server.properties` JVM system property. Many properties can also be overridden per tenant at runtime without restarting the server.
+
+---
+
+## Property namespace
+
+All Kill Bill properties share the `org.killbill.` prefix, with sub-namespaces grouping related settings:
+
+| Namespace | Subsystem |
+|---|---|
+| `org.killbill.dao.*` | Database connection pool |
+| `org.killbill.billing.osgi.dao.*` | Plugin database connection |
+| `org.killbill.catalog.*` | Catalog loading |
+| `org.killbill.notificationq.*` | Notification queue |
+| `org.killbill.persistent.bus.*` | Internal and external event bus |
+| `org.killbill.payment.*` | Payment engine |
+| `org.killbill.invoice.*` | Invoice engine |
+| `org.killbill.jaxrs.*` | REST API layer |
+| `org.killbill.server.*` | Server-level flags |
+| `org.killbill.tenant.*` | Multi-tenancy behavior |
+
+Properties are read using [config-magic](https://github.com/brianm/config-magic). Each property interface in `org.killbill.billing.util.config.definition` declares the key, a default value, and a description that serve as the canonical reference.
+
+---
+
+## Key properties
+
+### Database connection
+
+```properties
+# Main Kill Bill schema
+org.killbill.dao.url=jdbc:mysql://127.0.0.1:3306/killbill
+org.killbill.dao.user=root
+org.killbill.dao.password=root
+org.killbill.dao.logLevel=DEBUG
+
+# OSGI plugin schema (can share the same database)
+org.killbill.billing.osgi.dao.url=jdbc:mysql://127.0.0.1:3306/killbill
+org.killbill.billing.osgi.dao.user=root
+org.killbill.billing.osgi.dao.password=root
+```
+
+Set `org.killbill.dao.logLevel` to `WARN` or `ERROR` in production to avoid flooding your logs with SQL statements.
+
+### Catalog
+
+```properties
+# Classpath resource name or file:// URI
+org.killbill.catalog.uri=SpyCarAdvanced.xml
+
+# Number of XML loader threads (increase for large catalogs)
+org.killbill.catalog.loader.threads.pool.nb=1
+```
+
+In multi-tenant deployments the system-level catalog URI acts as a fallback. Each tenant can upload its own catalog via `POST /1.0/kb/tenants/{tenantId}/uploadCatalogXml`.
+
+### Server flags
+
+```properties
+# Enable multi-tenant mode (recommended for production)
+org.killbill.server.multitenant=true
+
+# Enable gzip compression on HTTP responses
+org.killbill.server.http.gzip=true
+
+# Rate at which tenant config/catalog changes are broadcast to all nodes
+org.killbill.tenant.broadcast.rate=5s
+```
+
+### Payment engine
+
+From `PaymentConfig`:
+
+```properties
+# Retry schedule for failed payments (days between retries)
+org.killbill.payment.retry.days=8,8,8
+
+# Timeout for a single payment plugin call
+org.killbill.payment.plugin.timeout=30s
+
+# Number of threads available to payment plugins
+org.killbill.payment.plugin.threads.nb=10
+
+# Delay before retrying a payment that failed due to a plugin error
+org.killbill.payment.failure.retry.start.sec=300
+
+# Multiplier applied between plugin-failure retries
+org.killbill.payment.failure.retry.multiplier=2
+
+# Maximum plugin-failure retry attempts
+org.killbill.payment.failure.retry.max.attempts=8
+
+# Janitor run rate (resolves stuck UNKNOWN/PENDING transactions)
+org.killbill.payment.janitor.rate=1h
+```
+
+### Invoice engine
+
+From `InvoiceConfig`:
+
+```properties
+# Maximum months into the future Kill Bill will generate invoices for
+org.killbill.invoice.maxNumberOfMonthsInFuture=36
+
+# Enable billing sanity safety checks (set to false only in tests)
+org.killbill.invoice.sanitySafetyBoundEnabled=true
+
+# Maximum invoice items per subscription per day (safety bound)
+org.killbill.invoice.maxDailyNumberOfItemsSafetyBound=15
+
+# Whether to send email notifications on invoice creation
+org.killbill.invoice.emailNotificationsEnabled=false
+
+# Enable or disable the entire invoicing subsystem
+org.killbill.invoice.enabled=true
+```
+
+### REST API layer
+
+From `JaxrsConfig`:
+
+```properties
+# Thread pool size for async JAX-RS calls
+org.killbill.jaxrs.threads.pool.nb=10
+
+# Total timeout for an API request
+org.killbill.jaxrs.timeout=30s
+
+# Whether GET calls use the read-only DB connection
+org.killbill.jaxrs.get.ro=true
+```
+
+---
+
+## Notification queue and bus configuration
+
+Kill Bill's billing engine relies on two durable, database-backed queues:
+
+- **Internal bus** (`org.killbill.persistent.bus.main.*`) — delivers events between Kill Bill subsystems (e.g., subscription changes trigger invoice generation).
+- **External bus** (`org.killbill.persistent.bus.external.*`) — delivers events to registered webhooks and plugins.
+- **Notification queue** (`org.killbill.notificationq.main.*`) — schedules future work such as recurring billing and payment retries.
+
+```properties
+# Notification queue — controls how scheduled events are polled
+org.killbill.notificationq.main.sleep=100
+org.killbill.notificationq.main.claimed=1
+org.killbill.notificationq.main.queue.mode=STICKY_POLLING
+org.killbill.notificationq.main.notification.nbThreads=1
+
+# Internal bus — high-throughput event delivery within the JVM
+org.killbill.persistent.bus.main.queue.mode=STICKY_EVENTS
+org.killbill.persistent.bus.main.claimed=1
+org.killbill.persistent.bus.main.nbThreads=1
+org.killbill.persistent.bus.main.sleep=0
+org.killbill.persistent.bus.main.queue.capacity=1000
+
+# External bus — set inMemory=false to persist events to the DB
+org.killbill.persistent.bus.external.queue.mode=STICKY_EVENTS
+org.killbill.persistent.bus.external.inMemory=true
+```
+
+<Info>
+  `STICKY_POLLING` and `STICKY_EVENTS` are queue dispatch modes. `STICKY_POLLING` means a node only processes notifications it has claimed. `STICKY_EVENTS` means events are sticky to a particular node while in-flight. Both modes are safe for multi-node clusters.
+</Info>
+
+For the analytics plugin, a separate notification queue is used:
+
+```properties
+org.killbill.notificationq.analytics.tableName=analytics_notifications
+org.killbill.notificationq.analytics.historyTableName=analytics_notifications_history
+```
+
+---
+
+## Per-tenant configuration override
+
+Any property that accepts a tenant context (those with a `@Param("dummy")` overload in the config interface) can be overridden for a specific tenant without restarting the server.
+
+### Upload a per-tenant config
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  --data-binary '{"org.killbill.payment.retry.days":"1,3,5","org.killbill.invoice.maxNumberOfMonthsInFuture":"12"}' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadPerTenantConfig"
+```
+
+The body is a JSON object whose keys are fully qualified property names and whose values are strings. The change takes effect for the current tenant on the next API call — no restart required.
+
+<Note>
+  Per-tenant overrides are cached in memory. If you update the configuration and want all nodes in a cluster to pick it up immediately, issue a tenant cache invalidation: `DELETE /1.0/kb/admin/cache/tenants`.
+</Note>
+
+---
+
+## Control tags
+
+Control tags are boolean flags you apply to an account to change the billing engine's behaviour for that account. They are stored in the `tag` table and evaluated at invoice and payment generation time.
+
+### Available system tags
+
+<AccordionGroup>
+  <Accordion title="AUTO_INVOICING_OFF">
+    Suspends automatic invoice generation for the account. Kill Bill will not create invoices during the scheduled billing run. Useful for accounts that are in dispute or under manual review.
+  </Accordion>
+  <Accordion title="AUTO_PAY_OFF">
+    Prevents automatic payment collection. Invoices are still generated but no charge attempt is made against the account's payment method. The account owner must pay manually.
+  </Accordion>
+  <Accordion title="OVERDUE_ENFORCEMENT_OFF">
+    Disables the overdue (dunning) state machine for the account. The account will not transition through overdue states regardless of unpaid invoices.
+  </Accordion>
+  <Accordion title="WRITTEN_OFF">
+    Marks all unpaid invoices as written off. The account balance is treated as zero for billing purposes. No further collection attempts are made.
+  </Accordion>
+  <Accordion title="AUTO_INVOICING_DRAFT">
+    Generates invoices in `DRAFT` state instead of `COMMITTED`. Draft invoices can be reviewed and edited before being committed. Useful for accounts with complex billing arrangements that require human approval.
+  </Accordion>
+  <Accordion title="AUTO_INVOICING_REUSE_DRAFT">
+    When combined with `AUTO_INVOICING_DRAFT`, causes Kill Bill to reuse an existing draft invoice for the same billing period rather than creating a new one.
+  </Accordion>
+</AccordionGroup>
+
+### Applying a control tag via API
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: operator" \
+  -X POST \
+  --data-binary '["AUTO_PAY_OFF"]' \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/tags"
+```
+
+Multiple tags can be applied in the same request by including them all in the JSON array.
+
+### Listing tags on an account
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/tags"
+```
+
+### Removing a control tag
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: operator" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/tags?tagList=AUTO_PAY_OFF"
+```
+
+<Warning>
+  Removing `AUTO_PAY_OFF` from an account that has outstanding unpaid invoices will cause Kill Bill to attempt payment collection at the next scheduled run.
+</Warning>

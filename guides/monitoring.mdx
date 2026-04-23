@@ -1,0 +1,365 @@
+---
+title: "Monitoring and administering Kill Bill"
+description: "Monitor node health, inspect notification queues and bus events, manage caches, fix stuck payments, and audit account activity through the admin API."
+---
+
+Kill Bill exposes a set of administrative endpoints under `/1.0/kb/admin` and `/1.0/kb/nodesInfo` that give you visibility into the health of the system, the state of internal queues, the cluster topology, and the audit history of every object. This page documents each endpoint and explains when to use it.
+
+<Note>
+  All admin endpoints require the built-in `admin` role. API calls must include HTTP Basic authentication with your admin credentials in addition to the standard `X-Killbill-ApiKey` and `X-Killbill-ApiSecret` tenant headers.
+</Note>
+
+---
+
+## Health check
+
+### GET /1.0/kb/admin/healthcheck
+
+Returns `200 OK` when the node is healthy and ready to serve traffic. Returns a non-2xx status when the node has been manually taken out of rotation or a critical subsystem has failed.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/admin/healthcheck"
+```
+
+### Rotation management
+
+You can manually remove a node from a load balancer pool without stopping the JVM. This is useful during rolling deployments.
+
+**Take a node out of rotation:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/healthcheck"
+```
+
+**Put the node back into rotation:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/admin/healthcheck"
+```
+
+Once taken out of rotation, `GET /1.0/kb/admin/healthcheck` returns a non-healthy response, and a properly configured load balancer will stop sending traffic to that node.
+
+---
+
+## Queue inspection
+
+### GET /1.0/kb/admin/queues
+
+Streams a JSON object containing pending and in-flight events from both the internal persistent bus and the notification queues. This is the primary tool for diagnosing billing delays or stuck background jobs.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/admin/queues"
+```
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `accountId` | UUID | — | Filter events to a specific account |
+| `queueName` | string | — | Filter notifications to a specific queue name |
+| `serviceName` | string | — | Filter notifications to a specific service name |
+| `withHistory` | boolean | `true` | Include historical (already-processed) events |
+| `withInProcessing` | boolean | `true` | Include events currently being dispatched |
+| `withBusEvents` | boolean | `true` | Include internal bus events |
+| `withNotifications` | boolean | `true` | Include notification queue entries |
+| `minDate` | ISO datetime | now − 2 days | Lower date bound for history |
+| `maxDate` | ISO datetime | now + 2 days | Upper date bound for future notifications |
+
+**Inspect only pending notifications for a specific account:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/admin/queues?accountId=8785164f-b5d7-4da1-9495-33f5105e8d80&withHistory=false&withBusEvents=false"
+```
+
+The response is a streaming JSON document with two top-level arrays:
+
+```json
+{
+  "busEvents": [ ... ],
+  "notifications": [ ... ]
+}
+```
+
+Each notification entry includes the queue name, service name, effective date, and the serialized event payload — giving you a complete view of what work is scheduled.
+
+<Info>
+  The response is streamed using chunked transfer encoding (`application/octet-stream`). Use `curl --no-buffer` or a streaming-capable HTTP client when consuming this endpoint programmatically.
+</Info>
+
+---
+
+## Cluster node information
+
+### GET /1.0/kb/nodesInfo
+
+Returns metadata about every node in the Kill Bill cluster: software version, boot time, last updated timestamp, and the list of installed plugins with their state and registered service types.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/nodesInfo"
+```
+
+Example response (single node):
+
+```json
+[
+  {
+    "nodeName": "killbill-node-1",
+    "bootTime": "2024-01-15T09:00:00.000Z",
+    "lastUpdatedDate": "2024-01-15T12:34:56.000Z",
+    "killbillVersion": "0.24.0",
+    "apiVersion": "0.54.0",
+    "pluginApiVersion": "0.26.0",
+    "commonVersion": "0.24.0",
+    "platformVersion": "0.40.0",
+    "pluginsInfo": [
+      {
+        "bundleSymbolicName": "org.kill-bill.billing.killbill-stripe",
+        "pluginKey": "stripe",
+        "pluginName": "killbill-stripe",
+        "version": "7.1.0",
+        "state": "RUNNING",
+        "isSelectedForStart": true,
+        "services": [
+          {
+            "serviceTypeName": "PAYMENT_PLUGIN_API",
+            "registrationName": "killbill-stripe"
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+The `state` field for each plugin is one of `RUNNING`, `STOPPED`, `DISABLED`, or `ERROR`.
+
+### Triggering a node command
+
+You can broadcast a command to all nodes (or only the local node) using `POST /1.0/kb/nodesInfo`. This is used by the KPM plugin to install or upgrade plugins across the cluster without manual SSH access.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: operator" \
+  -X POST \
+  --data-binary '{
+    "nodeCommandType": "RESTART_PLUGIN",
+    "nodeCommandProperties": [
+      {"key": "pluginName", "value": "killbill-stripe"},
+      {"key": "pluginVersion", "value": "7.1.0"}
+    ],
+    "isSystemCommandType": true
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/nodesInfo"
+```
+
+Add `?localNodeOnly=true` to send the command only to the node that receives the request.
+
+---
+
+## Cache management
+
+Kill Bill caches tenant configuration, catalogs, overdue config, payment state machine config, and several account-level lookups in memory. When you push a configuration change that does not propagate automatically, you can force a cache flush.
+
+### Invalidate all caches
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: operator" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache"
+```
+
+Returns `204 No Content` on success.
+
+### Invalidate caches for a specific cache type
+
+Pass the `cacheName` query parameter with the name of the cache to clear:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache?cacheName=tenant-catalog"
+```
+
+### Invalidate caches for a specific account
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/"
+```
+
+This clears the `ACCOUNT_RECORD_ID`, `ACCOUNT_IMMUTABLE`, and `ACCOUNT_BCD` cache entries for the account.
+
+### Invalidate caches for the current tenant
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/admin/cache/tenants"
+```
+
+This is the correct action after uploading a new per-tenant catalog, overdue configuration, or per-tenant property override when you want the change to take effect immediately across all nodes in a cluster.
+
+---
+
+## Fixing stuck payment transactions
+
+Payment transactions can become stuck in `UNKNOWN` or `PENDING` state when a gateway times out or a network partition occurs between Kill Bill and the payment plugin. The payment janitor resolves most of these automatically, but you can also fix them manually.
+
+### PUT /1.0/kb/admin/payments/{paymentId}/transactions/{paymentTransactionId}
+
+Forces a payment transaction into a specific terminal state. Use this only when you have confirmed the actual outcome of the transaction with the payment gateway.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: operator" \
+  -H "X-Killbill-Reason: manual-reconciliation" \
+  -X PUT \
+  --data-binary '{
+    "transactionStatus": "SUCCESS",
+    "lastSuccessPaymentState": "AUTH_SUCCESS",
+    "currentPaymentStateName": "AUTH_SUCCESS"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/admin/payments/cc989d05-0d49-4f0e-a0e5-9394e4b57a65/transactions/fe48a58a-7c8e-4f11-b80c-7fb9a628e9e8"
+```
+
+The `transactionStatus` must be a valid `TransactionStatus` value: `SUCCESS`, `FAILURE`, `PENDING`, `UNKNOWN`, or `PAYMENT_FAILURE`.
+
+<Warning>
+  Manually overriding a transaction state bypasses all plugin logic and directly updates the Kill Bill state machine. Only do this when the payment janitor has failed to resolve the transaction and you have independently verified the outcome with the gateway.
+</Warning>
+
+---
+
+## Account timeline
+
+### GET /1.0/kb/accounts/{accountId}/timeline
+
+Returns the complete billing history for an account in a single response: subscriptions, invoices, payments, and refunds — all ordered by date.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/timeline"
+```
+
+Add `?audit=FULL` to include the complete audit log for every object in the timeline:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/timeline?audit=FULL"
+```
+
+---
+
+## Audit logs
+
+Kill Bill records every create and update operation in the `audit_log` table with the caller's identity (`createdBy`), an optional reason, and a comment.
+
+### GET /1.0/kb/accounts/{accountId}/auditLogs
+
+Returns the audit trail for the account object itself.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8785164f-b5d7-4da1-9495-33f5105e8d80/auditLogs"
+```
+
+Most resource endpoints also expose an `auditLogs` sub-resource. For example, to retrieve the audit trail for a specific invoice:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/invoices/5b9b1296-38a2-4bee-a6e0-1f60fc1d0b7f/auditLogs"
+```
+
+The `audit` query parameter controls how much audit data is embedded in API responses:
+
+| Value | Behavior |
+|---|---|
+| `NONE` | No audit data returned (default — lowest overhead) |
+| `MINIMAL` | Returns only the creation audit record |
+| `FULL` | Returns all audit records for every embedded object |
+
+---
+
+## External bus integration
+
+Kill Bill emits all significant billing events (subscription changes, invoice creation, payment success/failure, etc.) onto the external persistent bus (`org.killbill.persistent.bus.external.*`). Any system that registers as a push notification recipient — or any plugin that implements the `OSGIKillbillEventDispatcher` — can consume these events for external monitoring.
+
+<Tip>
+  Set `org.killbill.persistent.bus.external.inMemory=false` in production and configure the bus with dedicated threads to ensure events are durably persisted and reliably delivered to downstream systems even if a consumer is temporarily unavailable.
+</Tip>
+
+To register a push notification endpoint:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: operator" \
+  -X POST \
+  --data-binary '{"cb": "https://your-monitoring-system.example.com/killbill-events"}' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/registerNotificationCallback"
+```
+
+Kill Bill will `POST` a JSON event payload to the registered URL for every event on the external bus. Your monitoring system can use these callbacks to track SLA compliance, alert on failed payments, or feed data into an observability platform.

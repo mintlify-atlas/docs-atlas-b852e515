@@ -1,0 +1,283 @@
+---
+title: "Custom Fields API — metadata on any entity"
+description: "Attach arbitrary key-value pairs to any Kill Bill entity. Store external IDs, workflow flags, or any application-specific metadata alongside billing objects."
+---
+
+Custom fields let you attach arbitrary key-value metadata to any Kill Bill entity without modifying the schema. They are tenant-scoped, included in the audit trail, and searchable by object type, field name, and optional field value. Common uses include storing external system identifiers, workflow state flags, and customer-facing notes alongside billing objects.
+
+## Object types
+
+Custom fields can be attached to any of the following object types:
+
+| `objectType` | Description |
+|---|---|
+| `ACCOUNT` | Customer account |
+| `ACCOUNT_EMAIL` | Email address record |
+| `BLOCKING_STATES` | Entitlement/billing blocking state |
+| `BUNDLE` | Subscription bundle |
+| `CUSTOM_FIELD` | Custom field itself (metadata on metadata) |
+| `INVOICE` | Invoice |
+| `INVOICE_ITEM` | Individual invoice line item |
+| `INVOICE_PAYMENT` | Payment applied to an invoice |
+| `PAYMENT` | Payment record |
+| `PAYMENT_ATTEMPT` | Individual payment attempt |
+| `PAYMENT_METHOD` | Payment method |
+| `SUBSCRIPTION` | Subscription |
+| `SUBSCRIPTION_EVENT` | Subscription lifecycle event |
+| `TRANSACTION` | Payment transaction |
+| `TAG` | Tag instance |
+| `TAG_DEFINITION` | Tag definition |
+| `TENANT` | Tenant |
+
+---
+
+## Custom fields on entities
+
+Every major Kill Bill entity exposes `GET`, `POST`, `PUT`, and `DELETE` sub-resources for managing custom fields. The patterns are identical across entity types; the examples below use accounts.
+
+### Add custom fields to an account
+
+The request body is a JSON array of custom field objects. You can add multiple fields in one call.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/customFields" \
+  -d '[
+    {
+      "name": "externalCrmId",
+      "value": "CRM-00123"
+    },
+    {
+      "name": "salesRegion",
+      "value": "us-west"
+    }
+  ]'
+```
+
+Returns `201 Created` with a `Location` header pointing to the account's custom fields.
+
+<Expandable title="Request body fields">
+  <ParamField body="name" type="string" required>
+    Field name. Must be unique per object (you cannot have two fields with the same name on the same entity).
+  </ParamField>
+  <ParamField body="value" type="string" required>
+    Field value. All values are stored as strings.
+  </ParamField>
+</Expandable>
+
+### List custom fields on an account
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/customFields"
+```
+
+**Response**
+
+```json
+[
+  {
+    "customFieldId": "7fb4c1d2-3e5a-4b8f-9c2d-0a1b2c3d4e5f",
+    "objectId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+    "objectType": "ACCOUNT",
+    "name": "externalCrmId",
+    "value": "CRM-00123",
+    "auditLogs": []
+  },
+  {
+    "customFieldId": "8gc5d2e3-4f6b-5c9g-0d3e-1b2c3d4e5f6g",
+    "objectId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+    "objectType": "ACCOUNT",
+    "name": "salesRegion",
+    "value": "us-west",
+    "auditLogs": []
+  }
+]
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="customFieldId" type="string">
+    UUID assigned to this custom field instance.
+  </ResponseField>
+  <ResponseField name="objectId" type="string">
+    UUID of the entity this field is attached to.
+  </ResponseField>
+  <ResponseField name="objectType" type="string">
+    Type of the entity. One of the object types listed above.
+  </ResponseField>
+  <ResponseField name="name" type="string">
+    Field name.
+  </ResponseField>
+  <ResponseField name="value" type="string">
+    Field value.
+  </ResponseField>
+  <ResponseField name="auditLogs" type="array">
+    Audit records for this field. Populated when `audit=MINIMAL` or `audit=FULL` is specified.
+  </ResponseField>
+</Expandable>
+
+### Update custom fields on an account
+
+Send a `PUT` with an array of custom field objects that include their `customFieldId`:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/customFields" \
+  -d '[
+    {
+      "customFieldId": "7fb4c1d2-3e5a-4b8f-9c2d-0a1b2c3d4e5f",
+      "name": "externalCrmId",
+      "value": "CRM-00456"
+    }
+  ]'
+```
+
+Returns `204 No Content` on success.
+
+### Remove custom fields from an account
+
+Pass the custom field UUIDs you want to remove as the `customFieldList` query parameter:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/customFields?customFieldList=7fb4c1d2-3e5a-4b8f-9c2d-0a1b2c3d4e5f"
+```
+
+Returns `204 No Content` on success.
+
+### Supported entity endpoints
+
+The same `GET`, `POST`, `PUT`, and `DELETE` pattern is available on these entity paths:
+
+| Entity | Base path |
+|---|---|
+| Account | `/1.0/kb/accounts/{accountId}/customFields` |
+| Bundle | `/1.0/kb/bundles/{bundleId}/customFields` |
+| Subscription | `/1.0/kb/subscriptions/{subscriptionId}/customFields` |
+| Invoice | `/1.0/kb/invoices/{invoiceId}/customFields` |
+| Invoice item | `/1.0/kb/invoices/{invoiceId}/customFields` (with `itemId`) |
+| Payment | `/1.0/kb/payments/{paymentId}/customFields` |
+| Payment method | `/1.0/kb/paymentMethods/{paymentMethodId}/customFields` |
+| Transaction | `/1.0/kb/invoicePayments/{invoicePaymentId}/customFields` |
+
+---
+
+## Global custom field listing and search
+
+### List all custom fields (paginated)
+
+Returns every custom field across all entities in the tenant.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/customFields/pagination?offset=0&limit=100"
+```
+
+### Search custom fields by text
+
+Searches across all field names and values using a single search key:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/customFields/search/CRM-00123?offset=0&limit=100"
+```
+
+### Search custom fields by type and name
+
+A more targeted search that filters by `objectType` and `fieldName`, with an optional `fieldValue`:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/customFields/search?objectType=ACCOUNT&fieldName=externalCrmId&fieldValue=CRM-00123&offset=0&limit=100"
+```
+
+<Expandable title="Query parameters">
+  <ParamField query="objectType" type="string" required>
+    Object type to filter by. Must be one of the valid object types listed above.
+  </ParamField>
+  <ParamField query="fieldName" type="string" required>
+    Field name to search for. The match is exact.
+  </ParamField>
+  <ParamField query="fieldValue" type="string">
+    Optional field value to match. When omitted, all fields with the given name and type are returned.
+  </ParamField>
+  <ParamField query="offset" type="integer">
+    Zero-based offset for pagination. Defaults to `0`.
+  </ParamField>
+  <ParamField query="limit" type="integer">
+    Maximum number of records to return. Defaults to `100`.
+  </ParamField>
+  <ParamField query="audit" type="string">
+    Audit log level: `NONE` (default), `MINIMAL`, or `FULL`.
+  </ParamField>
+</Expandable>
+
+Both `objectType` and `fieldName` are required for the structured search endpoint. Omitting either returns `400 Bad Request`.
+
+### Retrieve custom field audit history
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/customFields/7fb4c1d2-3e5a-4b8f-9c2d-0a1b2c3d4e5f/auditLogsWithHistory"
+```
+
+Returns the full change history for the custom field, including the previous and current values at each change point.
+
+---
+
+## Common patterns
+
+### Find all accounts in a sales region
+
+```bash
+curl -u admin:password \
+  -H "X-Killbill-ApiKey: bob" -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/customFields/search?objectType=ACCOUNT&fieldName=salesRegion&fieldValue=us-west"
+```
+
+### Store an external ID on a subscription
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/subscriptions/7ff3c2d4-1e4a-4b9f-9c3d-0a1b2c3d4e5f/customFields" \
+  -d '[{"name": "externalSubscriptionId", "value": "SUB-98765"}]'
+```
+
+<Info>
+Custom field names and values are stored as plain strings. If you need to store structured data, serialize it to JSON and store it as the value string.
+</Info>

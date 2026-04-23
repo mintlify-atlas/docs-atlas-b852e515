@@ -1,0 +1,321 @@
+---
+title: "Overdue API — dunning and collections configuration"
+description: "Upload and retrieve Kill Bill's overdue configuration to automate dunning: block changes, suspend entitlements, and re-evaluate accounts on a schedule."
+---
+
+The overdue system in Kill Bill automates your collections workflow. When an account has unpaid invoices that age beyond thresholds you define, Kill Bill moves the account through a series of named overdue states. Each state can block subscription changes, suspend entitlements, and trigger notification events — without any custom code. The configuration is a single XML (or JSON) document that you upload once per tenant.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/1.0/kb/overdue` | Retrieve the overdue configuration as JSON |
+| `GET` | `/1.0/kb/overdue/xml` | Retrieve the overdue configuration as XML |
+| `POST` | `/1.0/kb/overdue/xml` | Upload a new overdue configuration as XML |
+| `POST` | `/1.0/kb/overdue` | Upload a new overdue configuration as JSON |
+| `GET` | `/1.0/kb/accounts/{accountId}/overdue` | Get an account's current overdue state |
+
+---
+
+## GET /1.0/kb/overdue — retrieve overdue config as JSON
+
+Returns the tenant's active overdue configuration as a JSON object. The response includes the list of configured overdue states in evaluation order (most severe first as declared in the XML, but evaluated least-severe first).
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/overdue"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "initialReevaluationInterval": null,
+  "overdueStates": [
+    {
+      "name": "OD3",
+      "externalMessage": "Reached OD3",
+      "isDisableEntitlementAndChangesBlocked": true,
+      "isBlockChanges": true,
+      "isClearState": false,
+      "subscriptionCancellationPolicy": null,
+      "condition": {
+        "timeSinceEarliestUnpaidInvoiceEqualsOrExceeds": {
+          "unit": "DAYS",
+          "number": 50
+        }
+      },
+      "autoReevaluationIntervalDays": 5
+    },
+    {
+      "name": "OD2",
+      "externalMessage": "Reached OD2",
+      "isDisableEntitlementAndChangesBlocked": true,
+      "isBlockChanges": true,
+      "isClearState": false,
+      "subscriptionCancellationPolicy": null,
+      "condition": {
+        "timeSinceEarliestUnpaidInvoiceEqualsOrExceeds": {
+          "unit": "DAYS",
+          "number": 40
+        }
+      },
+      "autoReevaluationIntervalDays": 5
+    },
+    {
+      "name": "OD1",
+      "externalMessage": "Reached OD1",
+      "isDisableEntitlementAndChangesBlocked": false,
+      "isBlockChanges": true,
+      "isClearState": false,
+      "subscriptionCancellationPolicy": null,
+      "condition": {
+        "timeSinceEarliestUnpaidInvoiceEqualsOrExceeds": {
+          "unit": "DAYS",
+          "number": 30
+        }
+      },
+      "autoReevaluationIntervalDays": 5
+    }
+  ]
+}
+```
+
+</Expandable>
+
+---
+
+## GET /1.0/kb/overdue/xml — retrieve overdue config as XML
+
+Returns the raw overdue configuration XML that is stored for the tenant.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: text/xml" \
+  "http://127.0.0.1:8080/1.0/kb/overdue/xml"
+```
+
+---
+
+## POST /1.0/kb/overdue/xml — upload overdue config as XML
+
+Uploads a new overdue configuration XML document, replacing any previously stored configuration for the tenant. Kill Bill validates the XML structure before persisting it.
+
+<Note>
+  The request body is the raw XML document. Set `Content-Type: text/xml`.
+</Note>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/xml" \
+  -X POST \
+  --data-binary @overdue.xml \
+  "http://127.0.0.1:8080/1.0/kb/overdue/xml"
+```
+
+Returns `HTTP 201 Created` on success. Returns `HTTP 400 Bad Request` if the XML is malformed or fails validation.
+
+---
+
+## POST /1.0/kb/overdue — upload overdue config as JSON
+
+Uploads the overdue configuration in JSON format. Kill Bill validates the structure (including that all conditions use `timeSinceEarliestUnpaidInvoiceEqualsOrExceeds` with `DAYS` units) before persisting.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "initialReevaluationInterval": null,
+    "overdueStates": [
+      {
+        "name": "OD1",
+        "externalMessage": "Reached OD1",
+        "isDisableEntitlementAndChangesBlocked": false,
+        "isBlockChanges": true,
+        "isClearState": false,
+        "condition": {
+          "timeSinceEarliestUnpaidInvoiceEqualsOrExceeds": {
+            "unit": "DAYS",
+            "number": 30
+          }
+        }
+      }
+    ]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/overdue"
+```
+
+---
+
+## GET /1.0/kb/accounts/{accountId}/overdue — get account overdue state
+
+Returns the current overdue state for a specific account. Kill Bill evaluates the account's unpaid invoice history against the configured overdue states and returns the state the account is currently in.
+
+<ParamField path="accountId" type="string (UUID)" required>
+  The UUID of the account to check.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/8ab101b6-15e8-433b-b4f7-f79eeea3a6b4/overdue"
+```
+
+### Response fields
+
+<ResponseField name="name" type="string">
+  The name of the overdue state the account is currently in (e.g. `OD1`, `OD2`, `OD3`). Returns `__CLEAR__` when the account has no unpaid invoices older than any configured threshold.
+</ResponseField>
+
+<ResponseField name="externalMessage" type="string">
+  The human-readable message associated with this overdue state, as configured in the overdue XML.
+</ResponseField>
+
+<ResponseField name="isDisableEntitlementAndChangesBlocked" type="boolean">
+  When `true`, all of the account's subscriptions are suspended and new entitlement operations are blocked.
+</ResponseField>
+
+<ResponseField name="isBlockChanges" type="boolean">
+  When `true`, plan changes on the account's subscriptions are blocked (but entitlement remains active if `isDisableEntitlementAndChangesBlocked` is `false`).
+</ResponseField>
+
+<ResponseField name="isClearState" type="boolean">
+  When `true`, this state represents the cleared (good standing) state. Kill Bill returns this when no overdue condition is met.
+</ResponseField>
+
+<ResponseField name="reevaluationIntervalDays" type="integer">
+  Number of days after which Kill Bill will automatically re-evaluate this account's overdue status.
+</ResponseField>
+
+<Expandable title="Example response — account in OD1">
+
+```json
+{
+  "name": "OD1",
+  "externalMessage": "Reached OD1",
+  "isDisableEntitlementAndChangesBlocked": false,
+  "isBlockChanges": true,
+  "isClearState": false,
+  "reevaluationIntervalDays": 5
+}
+```
+
+</Expandable>
+
+<Expandable title="Example response — account in good standing">
+
+```json
+{
+  "name": "__CLEAR__",
+  "externalMessage": "",
+  "isDisableEntitlementAndChangesBlocked": false,
+  "isBlockChanges": false,
+  "isClearState": true,
+  "reevaluationIntervalDays": null
+}
+```
+
+</Expandable>
+
+---
+
+## Overdue configuration reference
+
+### The overdue.xml structure
+
+The overdue configuration XML contains a single `<overdueConfig>` root element with an `<accountOverdueStates>` child. States are evaluated from **least severe to most severe** — Kill Bill checks OD1 first, then OD2, then OD3. The most severe matching state wins.
+
+Below is the canonical three-state example from the Kill Bill default configuration:
+
+```xml
+<overdueConfig>
+  <accountOverdueStates>
+
+    <state name="OD3">
+      <condition>
+        <timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>
+          <unit>DAYS</unit><number>50</number>
+        </timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>
+      </condition>
+      <externalMessage>Reached OD3</externalMessage>
+      <blockChanges>true</blockChanges>
+      <disableEntitlementAndChangesBlocked>true</disableEntitlementAndChangesBlocked>
+      <autoReevaluationInterval>
+        <unit>DAYS</unit><number>5</number>
+      </autoReevaluationInterval>
+    </state>
+
+    <state name="OD2">
+      <condition>
+        <timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>
+          <unit>DAYS</unit><number>40</number>
+        </timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>
+      </condition>
+      <externalMessage>Reached OD2</externalMessage>
+      <blockChanges>true</blockChanges>
+      <disableEntitlementAndChangesBlocked>true</disableEntitlementAndChangesBlocked>
+      <autoReevaluationInterval>
+        <unit>DAYS</unit><number>5</number>
+      </autoReevaluationInterval>
+    </state>
+
+    <state name="OD1">
+      <condition>
+        <timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>
+          <unit>DAYS</unit><number>30</number>
+        </timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>
+      </condition>
+      <externalMessage>Reached OD1</externalMessage>
+      <blockChanges>true</blockChanges>
+      <disableEntitlementAndChangesBlocked>false</disableEntitlementAndChangesBlocked>
+      <autoReevaluationInterval>
+        <unit>DAYS</unit><number>5</number>
+      </autoReevaluationInterval>
+    </state>
+
+  </accountOverdueStates>
+</overdueConfig>
+```
+
+### State behavior summary
+
+| State | Days unpaid | Block changes | Suspend entitlement | Re-evaluate every |
+|-------|-------------|---------------|---------------------|-------------------|
+| OD1   | ≥ 30 days   | Yes           | No                  | 5 days            |
+| OD2   | ≥ 40 days   | Yes           | Yes                 | 5 days            |
+| OD3   | ≥ 50 days   | Yes           | Yes                 | 5 days            |
+
+### State element reference
+
+| Element | Description |
+|---------|-------------|
+| `<state name="...">` | Unique name for this overdue state |
+| `<condition>` | Trigger condition for this state |
+| `<timeSinceEarliestUnpaidInvoiceEqualsOrExceeds>` | Time-based condition: the age of the oldest unpaid invoice |
+| `<externalMessage>` | Human-readable message surfaced via the API and events |
+| `<blockChanges>` | When `true`, plan changes on all subscriptions are blocked |
+| `<disableEntitlementAndChangesBlocked>` | When `true`, all subscriptions are suspended |
+| `<autoReevaluationInterval>` | How often Kill Bill re-checks this account's overdue status |
+
+<Info>
+  Kill Bill automatically clears an account's overdue state when all invoices are paid. You do not need to call any API to clear the state — the overdue system detects payment and moves the account back to `__CLEAR__` during the next scheduled re-evaluation.
+</Info>

@@ -1,0 +1,616 @@
+---
+title: "Catalog API — products, plans, and pricing"
+description: "Manage Kill Bill's versioned product catalog: upload XML, create simple plans, query phases and add-ons, and validate catalog definitions."
+---
+
+The catalog is the heart of Kill Bill's billing configuration. It defines your products, plans, pricing, trial periods, billing periods, and the rules that govern plan changes and cancellations. Kill Bill supports versioned catalogs — you can upload new catalog versions with a future `effectiveDate` to schedule pricing changes without disrupting active subscriptions.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/1.0/kb/catalog` | Retrieve the full catalog as JSON |
+| `GET` | `/1.0/kb/catalog/xml` | Retrieve the full catalog as XML |
+| `POST` | `/1.0/kb/catalog/xml` | Upload a new catalog version as XML |
+| `DELETE` | `/1.0/kb/catalog` | Delete all per-tenant catalog versions |
+| `GET` | `/1.0/kb/catalog/versions` | List all catalog version dates |
+| `GET` | `/1.0/kb/catalog/availableBasePlans` | List all available base plans |
+| `GET` | `/1.0/kb/catalog/availableAddons` | List add-on plans for a base product |
+| `POST` | `/1.0/kb/catalog/simplePlan` | Create a simple plan in the current catalog |
+| `GET` | `/1.0/kb/catalog/phase` | Get a plan phase for a subscription at a given date |
+| `POST` | `/1.0/kb/catalog/xml/validate` | Validate catalog XML without uploading |
+
+---
+
+## GET /1.0/kb/catalog — retrieve catalog as JSON
+
+Returns all catalog versions as a JSON array. Each element represents one version of the catalog identified by its `effectiveDate`.
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date-time string. When provided, returns only the single catalog version effective at that date instead of all versions.
+</ParamField>
+
+<ParamField query="accountId" type="string (UUID)">
+  Optional. If supplied, resolves the catalog in the context of that account (respects account-level overrides).
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/catalog"
+```
+
+<Expandable title="Example response">
+
+```json
+[
+  {
+    "name": "SpyCarAdvanced",
+    "effectiveDate": "2013-02-08T00:00:00.000Z",
+    "currencies": ["USD", "GBP", "EUR", "JPY", "BTC"],
+    "units": [
+      { "name": "gallons", "prettyName": "gallons" }
+    ],
+    "products": [
+      {
+        "type": "BASE",
+        "name": "Standard",
+        "prettyName": "Standard",
+        "plans": ["standard-monthly", "standard-annual"],
+        "included": [],
+        "available": []
+      },
+      {
+        "type": "ADD_ON",
+        "name": "Gas",
+        "prettyName": "Gas",
+        "plans": ["gas-monthly"],
+        "included": [],
+        "available": []
+      }
+    ],
+    "priceLists": [
+      {
+        "name": "DEFAULT",
+        "plans": ["standard-monthly", "standard-annual", "sports-monthly"]
+      }
+    ]
+  }
+]
+```
+
+</Expandable>
+
+---
+
+## GET /1.0/kb/catalog/xml — retrieve catalog as XML
+
+Returns the catalog serialized as XML. Accepts the same `requestedDate` and `accountId` query parameters as the JSON endpoint.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: text/xml" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/xml"
+```
+
+<Expandable title="Example response (truncated)">
+
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<catalog xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="CatalogSchema.xsd">
+
+    <effectiveDate>2013-02-08T00:00:00+00:00</effectiveDate>
+    <catalogName>SpyCarAdvanced</catalogName>
+    <recurringBillingMode>IN_ADVANCE</recurringBillingMode>
+
+    <currencies>
+        <currency>USD</currency>
+        <currency>GBP</currency>
+        <currency>EUR</currency>
+    </currencies>
+
+    <products>
+        <product name="Standard">
+            <category>BASE</category>
+        </product>
+        <product name="Sports">
+            <category>BASE</category>
+            <available>
+                <addonProduct>OilSlick</addonProduct>
+                <addonProduct>RemoteControl</addonProduct>
+                <addonProduct>Gas</addonProduct>
+            </available>
+        </product>
+    </products>
+
+    <plans>
+        <plan name="standard-monthly">
+            <product>Standard</product>
+            <initialPhases>
+                <phase type="TRIAL">
+                    <duration>
+                        <unit>DAYS</unit>
+                        <number>30</number>
+                    </duration>
+                    <fixed>
+                        <fixedPrice/>
+                    </fixed>
+                </phase>
+            </initialPhases>
+            <finalPhase type="EVERGREEN">
+                <duration>
+                    <unit>UNLIMITED</unit>
+                </duration>
+                <recurring>
+                    <billingPeriod>MONTHLY</billingPeriod>
+                    <recurringPrice>
+                        <price>
+                            <currency>USD</currency>
+                            <value>100.00</value>
+                        </price>
+                    </recurringPrice>
+                </recurring>
+            </finalPhase>
+        </plan>
+    </plans>
+
+    <priceLists>
+        <defaultPriceList name="DEFAULT">
+            <plans>
+                <plan>standard-monthly</plan>
+                <plan>standard-annual</plan>
+            </plans>
+        </defaultPriceList>
+    </priceLists>
+</catalog>
+```
+
+</Expandable>
+
+---
+
+## POST /1.0/kb/catalog/xml — upload a catalog version
+
+Uploads a complete catalog XML document as a new catalog version. Kill Bill validates the XML before persisting it. The `effectiveDate` inside the XML determines when this version activates. Multiple versions can coexist; Kill Bill selects the correct version for each subscription at billing time.
+
+<Note>
+  The request body is the raw XML document, **not** base64-encoded. Set `Content-Type: text/xml`.
+</Note>
+
+<ParamField body="body" type="string" required>
+  A valid Kill Bill catalog XML document. The `<effectiveDate>` element inside the XML sets the activation date.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/xml" \
+  -X POST \
+  --data-binary @my-catalog.xml \
+  "http://127.0.0.1:8080/1.0/kb/catalog/xml"
+```
+
+A successful upload returns `HTTP 201 Created` with a `Location` header pointing to `GET /1.0/kb/catalog`.
+
+<Expandable title="Minimal catalog XML example">
+
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<catalog xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="CatalogSchema.xsd">
+
+    <effectiveDate>2024-01-01T00:00:00+00:00</effectiveDate>
+    <catalogName>MyProduct</catalogName>
+    <recurringBillingMode>IN_ADVANCE</recurringBillingMode>
+
+    <currencies>
+        <currency>USD</currency>
+    </currencies>
+
+    <products>
+        <product name="Basic">
+            <category>BASE</category>
+        </product>
+    </products>
+
+    <rules>
+        <changePolicy>
+            <changePolicyCase><policy>END_OF_TERM</policy></changePolicyCase>
+        </changePolicy>
+        <cancelPolicy>
+            <cancelPolicyCase><policy>END_OF_TERM</policy></cancelPolicyCase>
+        </cancelPolicy>
+    </rules>
+
+    <plans>
+        <plan name="basic-monthly">
+            <product>Basic</product>
+            <finalPhase type="EVERGREEN">
+                <duration><unit>UNLIMITED</unit></duration>
+                <recurring>
+                    <billingPeriod>MONTHLY</billingPeriod>
+                    <recurringPrice>
+                        <price>
+                            <currency>USD</currency>
+                            <value>9.99</value>
+                        </price>
+                    </recurringPrice>
+                </recurring>
+            </finalPhase>
+        </plan>
+    </plans>
+
+    <priceLists>
+        <defaultPriceList name="DEFAULT">
+            <plans>
+                <plan>basic-monthly</plan>
+            </plans>
+        </defaultPriceList>
+    </priceLists>
+</catalog>
+```
+
+</Expandable>
+
+---
+
+## DELETE /1.0/kb/catalog — delete all per-tenant catalog versions
+
+Removes all catalog versions that were uploaded for the current tenant. This operation resets the tenant to use the system-default (global) catalog. It is irreversible — use with care in production.
+
+<Warning>
+  Deleting the catalog does not affect existing subscriptions, but Kill Bill will be unable to generate new invoices for active subscriptions until a replacement catalog is uploaded.
+</Warning>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/catalog"
+```
+
+Returns `HTTP 204 No Content` on success.
+
+---
+
+## GET /1.0/kb/catalog/versions — list catalog version dates
+
+Returns an array of ISO 8601 date-time strings, one per catalog version, in ascending chronological order.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/versions"
+```
+
+```json
+[
+  "2013-02-08T00:00:00.000Z",
+  "2024-01-01T00:00:00.000Z"
+]
+```
+
+You can pass any of these dates as `requestedDate` to `GET /1.0/kb/catalog` to retrieve the exact state of the catalog at that point in time.
+
+---
+
+## GET /1.0/kb/catalog/availableBasePlans — list base plans
+
+Returns all base plan listings from the current (most recent) catalog version. Each entry includes the product name, plan name, billing period, price list, and recurring prices.
+
+<ParamField query="accountId" type="string (UUID)">
+  Optional. Scopes the lookup to the catalog version effective for the account's currency and start date.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/availableBasePlans"
+```
+
+<Expandable title="Example response">
+
+```json
+[
+  {
+    "product": "Standard",
+    "plan": "standard-monthly",
+    "final_phase_billing_period": "MONTHLY",
+    "priceList": "DEFAULT",
+    "final_phase_recurring_price": [
+      { "currency": "USD", "value": 100.00 },
+      { "currency": "GBP", "value": 75.00 },
+      { "currency": "EUR", "value": 85.00 }
+    ]
+  },
+  {
+    "product": "Sports",
+    "plan": "sports-annual",
+    "final_phase_billing_period": "ANNUAL",
+    "priceList": "DEFAULT",
+    "final_phase_recurring_price": [
+      { "currency": "USD", "value": 5000.00 },
+      { "currency": "GBP", "value": 3750.00 }
+    ]
+  }
+]
+```
+
+</Expandable>
+
+---
+
+## GET /1.0/kb/catalog/availableAddons — list add-ons for a base product
+
+Returns the add-on plan listings that are available for a given base product name. Use this to present upgrade or add-on options at subscription time.
+
+<ParamField query="baseProductName" type="string" required>
+  The name of the base product whose available add-ons you want to retrieve (e.g. `Sports`).
+</ParamField>
+
+<ParamField query="priceListName" type="string">
+  Optional. Filters results to a specific price list (e.g. `DEFAULT`).
+</ParamField>
+
+<ParamField query="accountId" type="string (UUID)">
+  Optional. Scopes the catalog lookup to the account context.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/availableAddons?baseProductName=Sports"
+```
+
+<Expandable title="Example response">
+
+```json
+[
+  {
+    "product": "OilSlick",
+    "plan": "oilslick-monthly",
+    "final_phase_billing_period": "MONTHLY",
+    "priceList": "DEFAULT",
+    "final_phase_recurring_price": [
+      { "currency": "USD", "value": 7.95 },
+      { "currency": "GBP", "value": 5.95 }
+    ]
+  },
+  {
+    "product": "RemoteControl",
+    "plan": "remotecontrol-monthly",
+    "final_phase_billing_period": "MONTHLY",
+    "priceList": "DEFAULT",
+    "final_phase_recurring_price": [
+      { "currency": "USD", "value": 17.95 },
+      { "currency": "GBP", "value": 15.95 }
+    ]
+  },
+  {
+    "product": "Gas",
+    "plan": "gas-monthly",
+    "final_phase_billing_period": null,
+    "priceList": "DEFAULT",
+    "final_phase_recurring_price": []
+  }
+]
+```
+
+</Expandable>
+
+---
+
+## POST /1.0/kb/catalog/simplePlan — create a simple plan
+
+Adds a new plan to the **current** catalog version using a simplified JSON descriptor. Kill Bill synthesizes the underlying XML catalog entry automatically. This is the fastest way to add a straightforward recurring plan without editing XML.
+
+<Note>
+  Simple plans support a single recurring charge per billing period. For usage-based pricing, tiered plans, or complex phase structures, upload a full catalog XML instead.
+</Note>
+
+### Request body
+
+<ParamField body="planId" type="string" required>
+  Unique identifier for the plan (e.g. `standard-monthly`). Must be unique within the catalog.
+</ParamField>
+
+<ParamField body="productName" type="string" required>
+  Name of the product this plan belongs to. If the product does not exist, it is created.
+</ParamField>
+
+<ParamField body="productCategory" type="string" required>
+  Product category. One of: `BASE`, `ADD_ON`, `STANDALONE`.
+</ParamField>
+
+<ParamField body="currency" type="string" required>
+  ISO 4217 currency code (e.g. `USD`, `EUR`, `GBP`).
+</ParamField>
+
+<ParamField body="amount" type="number" required>
+  Recurring price per billing period. Use `0` for a free plan.
+</ParamField>
+
+<ParamField body="billingPeriod" type="string" required>
+  Billing frequency. One of: `DAILY`, `WEEKLY`, `BIWEEKLY`, `THIRTY_DAYS`, `SIXTY_DAYS`, `NINETY_DAYS`, `MONTHLY`, `BIMESTRIAL`, `QUARTERLY`, `TRIANNUAL`, `BIANNUAL`, `ANNUAL`, `BIENNIAL`, `NO_BILLING_PERIOD`.
+</ParamField>
+
+<ParamField body="trialLength" type="integer">
+  Length of the trial phase. Set to `0` for no trial.
+</ParamField>
+
+<ParamField body="trialTimeUnit" type="string">
+  Time unit for `trialLength`. One of: `DAYS`, `WEEKS`, `MONTHS`, `YEARS`, `UNLIMITED`.
+</ParamField>
+
+<ParamField body="availableBaseProducts" type="array">
+  For `ADD_ON` plans only. List of base product names for which this add-on is available.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "planId": "basic-monthly",
+    "productName": "Basic",
+    "productCategory": "BASE",
+    "currency": "USD",
+    "amount": 9.99,
+    "billingPeriod": "MONTHLY",
+    "trialLength": 14,
+    "trialTimeUnit": "DAYS"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/catalog/simplePlan"
+```
+
+Returns `HTTP 201 Created` on success.
+
+<Tip>
+  After creating a simple plan, call `GET /1.0/kb/catalog` to verify that the plan appears in the catalog with the correct phases.
+</Tip>
+
+---
+
+## GET /1.0/kb/catalog/phase — get a plan phase for a subscription
+
+Returns the catalog phase that was in effect for a given subscription at a requested point in time. Useful for auditing what pricing applied to a subscription on a specific date.
+
+<ParamField query="subscriptionId" type="string (UUID)" required>
+  The subscription UUID to look up.
+</ParamField>
+
+<ParamField query="requestedDate" type="string">
+  ISO 8601 date-time. Defaults to the current date-time if omitted.
+</ParamField>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/phase?subscriptionId=8ab101b6-15e8-433b-b4f7-f79eeea3a6b4&requestedDate=2024-06-01T00:00:00Z"
+```
+
+<Expandable title="Example response">
+
+```json
+{
+  "type": "EVERGREEN",
+  "prices": [
+    { "currency": "USD", "value": 100.00 }
+  ],
+  "fixedPrices": [],
+  "duration": {
+    "unit": "UNLIMITED",
+    "number": -1
+  },
+  "billingPeriod": "MONTHLY",
+  "usages": []
+}
+```
+
+</Expandable>
+
+Returns `HTTP 400 Bad Request` if `requestedDate` is before the subscription start date or after the subscription cancel date.
+
+---
+
+## POST /1.0/kb/catalog/xml/validate — validate catalog XML
+
+Validates a catalog XML document against Kill Bill's schema and business rules **without** uploading it. Returns a list of validation errors. An empty `catalogValidationErrors` array indicates the catalog is valid.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: text/xml" \
+  -H "Accept: application/json" \
+  -X POST \
+  --data-binary @my-catalog.xml \
+  "http://127.0.0.1:8080/1.0/kb/catalog/xml/validate"
+```
+
+<Tabs>
+  <Tab title="Valid catalog">
+
+```json
+{
+  "catalogValidationErrors": []
+}
+```
+
+  </Tab>
+  <Tab title="Invalid catalog">
+
+```json
+{
+  "catalogValidationErrors": [
+    {
+      "errorDescription": "Plan 'basic-monthly' refers to product 'Basic' which does not exist in the catalog"
+    }
+  ]
+}
+```
+
+  </Tab>
+</Tabs>
+
+<Tip>
+  Always validate a catalog with this endpoint before uploading it with `POST /1.0/kb/catalog/xml` to catch errors early without affecting production data.
+</Tip>
+
+---
+
+## Catalog structure reference
+
+A Kill Bill catalog XML document has the following top-level structure:
+
+| Element | Description |
+|---------|-------------|
+| `<effectiveDate>` | ISO 8601 date-time when this catalog version becomes active |
+| `<catalogName>` | Human-readable name for the catalog |
+| `<recurringBillingMode>` | `IN_ADVANCE` or `IN_ARREAR` for recurring charges |
+| `<currencies>` | List of supported `<currency>` codes |
+| `<units>` | Usage unit definitions (for metered billing) |
+| `<products>` | Product definitions with category and add-on relationships |
+| `<rules>` | Change, cancellation, and alignment policies |
+| `<plans>` | Plan definitions with phases and pricing |
+| `<priceLists>` | Named groupings of plans; must include a `<defaultPriceList>` |
+
+### Plan phase types
+
+| Phase type | Description |
+|------------|-------------|
+| `TRIAL` | Free or fixed-price introductory period |
+| `DISCOUNT` | Reduced-price promotional period |
+| `FIXEDTERM` | Fixed-duration recurring period |
+| `EVERGREEN` | Indefinite recurring period (the normal subscription phase) |

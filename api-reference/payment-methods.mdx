@@ -1,0 +1,478 @@
+---
+title: "Payment Methods API — storing payment instruments"
+description: "Reference for Kill Bill payment method endpoints: add, retrieve, search, set default, and delete stored payment instruments on customer accounts."
+---
+
+A **payment method** represents a stored payment instrument — a credit card token, bank account reference, PayPal billing agreement, or any other instrument supported by the configured payment plugin. Payment methods are owned by accounts and processed through the payment plugin named in the `pluginName` field. Kill Bill stores the payment method metadata and delegates the actual instrument data (card numbers, tokens, etc.) to the plugin.
+
+## The `pluginName` field
+
+Every payment method is tied to exactly one payment plugin identified by `pluginName`. This string must match the plugin's self-reported name (e.g., `killbill-stripe`, `killbill-braintree`). The plugin is responsible for storing and tokenizing the instrument details passed in `pluginInfo.properties`.
+
+### The `__EXTERNAL_PAYMENT__` plugin
+
+Kill Bill ships with a built-in plugin name `__EXTERNAL_PAYMENT__`. Use it to record payments that were collected outside the system (cash, checks, wire transfers, manual card charges). Payment methods with this plugin name bypass the gateway entirely — Kill Bill records the transaction but does not submit it to any external processor.
+
+```json
+{
+  "pluginName": "__EXTERNAL_PAYMENT__",
+  "isDefault": false
+}
+```
+
+## The `isDefault` flag
+
+Each account has at most one default payment method. When Kill Bill triggers automatic invoice payments, it uses the default payment method. Setting `isDefault: true` when adding a payment method (or calling the set-default endpoint) updates the account's `paymentMethodId` pointer accordingly.
+
+---
+
+## Add a payment method to an account
+
+```
+POST /1.0/kb/accounts/{accountId}/paymentMethods
+```
+
+Creates a new payment method and optionally sets it as the account default.
+
+**Path parameters**
+
+<ParamField path="accountId" type="string" required>
+  UUID of the account to add the payment method to.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="isDefault" type="boolean" default="false">
+  Set this payment method as the account's default immediately.
+</ParamField>
+
+<ParamField query="payControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body**
+
+<ParamField body="pluginName" type="string" required>
+  Name of the payment plugin that will store this instrument (e.g., `killbill-stripe`, `__EXTERNAL_PAYMENT__`).
+</ParamField>
+
+<ParamField body="externalKey" type="string">
+  Client-assigned external key for this payment method.
+</ParamField>
+
+<ParamField body="isDefault" type="boolean">
+  Whether to make this the account default payment method.
+</ParamField>
+
+<ParamField body="pluginInfo" type="object">
+  <Expandable title="pluginInfo fields">
+    <ParamField body="externalPaymentMethodId" type="string">
+      The gateway's own reference for this instrument (e.g., Stripe customer ID or card ID).
+    </ParamField>
+    <ParamField body="properties" type="array">
+      Array of `{ key, value, isUpdatable }` objects. The plugin interprets these to store and tokenize the instrument. Common properties for card plugins:
+
+      ```json
+      [
+        { "key": "ccNumber",     "value": "4111111111111111", "isUpdatable": false },
+        { "key": "ccExpirationMonth", "value": "12",          "isUpdatable": true  },
+        { "key": "ccExpirationYear",  "value": "2027",         "isUpdatable": true  },
+        { "key": "ccVerificationValue", "value": "737",        "isUpdatable": false }
+      ]
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Responses:** `201 Created` — `Location` header points to the new payment method. `400` — invalid account ID or payload. `404` — account not found.
+
+<Tabs>
+  <Tab title="Card payment method">
+    ```bash
+    curl -v -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods?isDefault=true" \
+      -d '{
+        "pluginName": "killbill-stripe",
+        "pluginInfo": {
+          "properties": [
+            { "key": "ccNumber",            "value": "4111111111111111", "isUpdatable": false },
+            { "key": "ccExpirationMonth",   "value": "12",               "isUpdatable": true  },
+            { "key": "ccExpirationYear",    "value": "2027",             "isUpdatable": true  },
+            { "key": "ccVerificationValue", "value": "737",              "isUpdatable": false }
+          ]
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="External payment">
+    ```bash
+    curl -v -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods" \
+      -d '{
+        "pluginName": "__EXTERNAL_PAYMENT__",
+        "isDefault": false
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## List payment methods for an account
+
+```
+GET /1.0/kb/accounts/{accountId}/paymentMethods
+```
+
+Returns all active payment methods on the account.
+
+**Path parameters**
+
+<ParamField path="accountId" type="string" required>
+  UUID of the account.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level detail (e.g., card brand, last four digits) in the response.
+</ParamField>
+
+<ParamField query="includedDeleted" type="boolean" default="false">
+  Include soft-deleted payment methods.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — array of `PaymentMethod` objects.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods?withPluginInfo=true"
+```
+
+---
+
+## Retrieve a payment method by ID
+
+```
+GET /1.0/kb/paymentMethods/{paymentMethodId}
+```
+
+Returns a single payment method by its UUID.
+
+**Path parameters**
+
+<ParamField path="paymentMethodId" type="string" required>
+  UUID of the payment method.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="includedDeleted" type="boolean" default="false">
+  Return the payment method even if it has been deleted.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — `PaymentMethod` object. `400` — invalid UUID. `404` — not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/paymentMethods/916619a4-02bb-4d3d-b3da-2584ac897b19"
+```
+
+<Expandable title="Example response">
+```json
+{
+  "paymentMethodId": "916619a4-02bb-4d3d-b3da-2584ac897b19",
+  "externalKey": "916619a4-02bb-4d3d-b3da-2584ac897b19",
+  "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+  "isDefault": true,
+  "pluginName": "killbill-stripe",
+  "pluginInfo": {
+    "externalPaymentMethodId": "card_1NxQeJ2eZvKYlo2C0q4VPDKM",
+    "isDefaultPaymentMethod": false,
+    "properties": [
+      { "key": "card_brand", "value": "visa",   "isUpdatable": false },
+      { "key": "card_last4", "value": "1111",   "isUpdatable": false },
+      { "key": "exp_month",  "value": "12",     "isUpdatable": true  },
+      { "key": "exp_year",   "value": "2027",   "isUpdatable": true  }
+    ]
+  }
+}
+```
+</Expandable>
+
+---
+
+## Retrieve a payment method by external key
+
+```
+GET /1.0/kb/paymentMethods?externalKey={externalKey}
+```
+
+Looks up a payment method using the client-assigned external key.
+
+**Query parameters**
+
+<ParamField query="externalKey" type="string" required>
+  The payment method's external key.
+</ParamField>
+
+<ParamField query="includedDeleted" type="boolean" default="false">
+  Include deleted payment methods.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+**Responses:** `200 OK` — `PaymentMethod` object. `404` — not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/paymentMethods?externalKey=my-card-ref-001"
+```
+
+---
+
+## List all payment methods (paginated)
+
+```
+GET /1.0/kb/paymentMethods/pagination
+```
+
+Returns a paginated list of all payment methods across the tenant.
+
+**Query parameters**
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based starting index.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum records per page.
+</ParamField>
+
+<ParamField query="pluginName" type="string">
+  Filter to payment methods owned by a specific plugin.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — array of `PaymentMethod` objects with pagination headers.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/paymentMethods/pagination?offset=0&limit=50"
+```
+
+---
+
+## Search payment methods
+
+```
+GET /1.0/kb/paymentMethods/search/{searchKey}
+```
+
+Searches payment methods by a key string. The search is delegated to the payment plugin and typically matches against `externalKey`, gateway token, or card last-four.
+
+**Path parameters**
+
+<ParamField path="searchKey" type="string" required>
+  The value to search for.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based starting index.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum records per page.
+</ParamField>
+
+<ParamField query="pluginName" type="string">
+  Restrict search to a specific plugin.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+**Responses:** `200 OK` — array of matching `PaymentMethod` objects.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/paymentMethods/search/card_1NxQeJ2eZvKYlo2C"
+```
+
+---
+
+## Set the default payment method
+
+```
+PUT /1.0/kb/accounts/{accountId}/paymentMethods/{paymentMethodId}/setDefault
+```
+
+Updates the account to use the specified payment method as its default for automatic payments.
+
+**Path parameters**
+
+<ParamField path="accountId" type="string" required>
+  UUID of the account.
+</ParamField>
+
+<ParamField path="paymentMethodId" type="string" required>
+  UUID of the payment method to make default.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Responses:** `204 No Content` — default updated. `400` — invalid IDs. `404` — account or payment method not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods/916619a4-02bb-4d3d-b3da-2584ac897b19/setDefault"
+```
+
+---
+
+## Delete a payment method
+
+```
+DELETE /1.0/kb/paymentMethods/{paymentMethodId}
+```
+
+Soft-deletes a payment method. The record is retained in the database but marked inactive. Kill Bill will not use a deleted payment method for automatic payments.
+
+**Path parameters**
+
+<ParamField path="paymentMethodId" type="string" required>
+  UUID of the payment method to delete.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="deleteDefaultPaymentMethodWithAutoPayOff" type="boolean" default="false">
+  If `true`, allows deleting the account's default payment method while simultaneously turning off auto-pay on the account. Without this flag, deleting the default payment method returns a `400`.
+</ParamField>
+
+<ParamField query="forceDefaultPaymentMethodDeletion" type="boolean" default="false">
+  If `true`, forces deletion of the default payment method without modifying the account auto-pay setting. Use with caution — the account will have no default payment method.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Responses:** `204 No Content` — deleted. `400` — invalid UUID or attempted default deletion without the override flag. `404` — not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/paymentMethods/916619a4-02bb-4d3d-b3da-2584ac897b19"
+```
+
+<Warning>
+Deleting the default payment method while auto-pay is enabled will fail unless you pass `deleteDefaultPaymentMethodWithAutoPayOff=true`. This protects against accidental payment failures on upcoming invoices.
+</Warning>
+
+---
+
+## PaymentMethod object fields
+
+<ResponseField name="paymentMethodId" type="string">
+  Kill Bill-assigned UUID for this payment method.
+</ResponseField>
+
+<ResponseField name="externalKey" type="string">
+  Client-assigned external key.
+</ResponseField>
+
+<ResponseField name="accountId" type="string">
+  UUID of the owning account.
+</ResponseField>
+
+<ResponseField name="isDefault" type="boolean">
+  `true` if this is the account's default payment method.
+</ResponseField>
+
+<ResponseField name="pluginName" type="string">
+  Name of the payment plugin that owns this payment method.
+</ResponseField>
+
+<ResponseField name="pluginInfo" type="object">
+  Plugin-specific detail. Present only when `withPluginInfo=true`.
+
+  <Expandable title="pluginInfo fields">
+    <ResponseField name="externalPaymentMethodId" type="string">
+      The gateway's own reference ID for this instrument.
+    </ResponseField>
+    <ResponseField name="isDefaultPaymentMethod" type="boolean">
+      Whether the gateway considers this the default instrument for its own customer record.
+    </ResponseField>
+    <ResponseField name="properties" type="array">
+      Plugin-provided key-value pairs describing the instrument (card brand, last four digits, expiry, etc.).
+    </ResponseField>
+  </Expandable>
+</ResponseField>

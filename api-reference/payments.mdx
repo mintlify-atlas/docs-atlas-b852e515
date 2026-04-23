@@ -1,0 +1,740 @@
+---
+title: "Payments API — authorize, capture, refund operations"
+description: "Reference for Kill Bill payment operations: authorize, capture, purchase, refund, void, chargeback, and chargeback reversal endpoints."
+---
+
+The Payments API is the core of Kill Bill's payment processing layer. A **Payment** is the top-level container that groups related operations on a single payment instrument: it holds one or more **PaymentTransaction** records, each representing an individual gateway call (authorization, capture, refund, and so on). Every payment is associated with one account and one payment method, and its state is derived from the transactions it contains.
+
+## Key concepts
+
+### Payment states
+
+The overall payment status is computed from its transactions:
+
+| Status    | Meaning                                                                                    |
+|-----------|--------------------------------------------------------------------------------------------|
+| `INIT`    | Payment object created but no transaction has been submitted yet                           |
+| `SUCCESS` | The most recent transaction of each type completed successfully                            |
+| `FAILURE` | The most recent terminal transaction was declined or errored                               |
+| `PENDING` | The most recent transaction is awaiting an async response from the gateway                 |
+| `UNKNOWN` | Kill Bill received no response and cannot determine gateway state                          |
+
+### Transaction types
+
+Each `PaymentTransaction` carries a `transactionType` value:
+
+| Type                  | Description                                                             |
+|-----------------------|-------------------------------------------------------------------------|
+| `AUTHORIZE`           | Reserve funds on the payment instrument without capturing              |
+| `CAPTURE`             | Settle a prior authorization; moves reserved funds to the merchant     |
+| `PURCHASE`            | Authorize and capture in a single step                                 |
+| `VOID`                | Cancel an open authorization before it is captured                     |
+| `REFUND`              | Return captured funds to the customer                                  |
+| `CHARGEBACK`          | Record a dispute initiated by the customer through their bank          |
+| `CHARGEBACK_REVERSAL` | Reverse a previously recorded chargeback (dispute resolved in favor of merchant) |
+| `CREDIT`              | Push funds to the payment instrument without a prior purchase          |
+
+### Payment transaction request body
+
+All mutation endpoints (`POST`, `DELETE` for void) accept a `PaymentTransaction` JSON body. The fields used depend on the operation:
+
+```json
+{
+  "transactionExternalKey": "txn-capture-2024-001",
+  "paymentExternalKey": "pay-2024-001",
+  "amount": 49.99,
+  "currency": "USD",
+  "effectiveDate": "2024-01-15T00:00:00.000Z",
+  "properties": [
+    { "key": "CC_TOKEN", "value": "tok_1234", "isUpdatable": false }
+  ]
+}
+```
+
+<Note>
+`paymentExternalKey` is used in "by external key" variants (no path `paymentId`) to identify the target payment. `transactionExternalKey` is an idempotency key — re-submitting the same key returns the existing transaction instead of creating a duplicate.
+</Note>
+
+### Plugin parameters
+
+Two query parameters integrate with the Kill Bill plugin framework:
+
+| Parameter                    | Description                                                                                 |
+|------------------------------|---------------------------------------------------------------------------------------------|
+| `paymentControlPluginName`   | One or more control plugins to run (e.g., fraud checks, retry logic). Repeatable.          |
+| `pluginProperty`             | Arbitrary key=value strings forwarded to the payment plugin. Repeatable. Format: `key=value`. |
+
+---
+
+## Initiate a payment on an account
+
+```
+POST /1.0/kb/accounts/{accountId}/payments
+```
+
+Creates a new payment (and its first transaction) against an existing account. The `transactionType` in the body determines whether Kill Bill submits an `AUTHORIZE`, `PURCHASE`, or `CREDIT`.
+
+**Path parameters**
+
+<ParamField path="accountId" type="string" required>
+  UUID of the account to charge.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentMethodId" type="string">
+  UUID of the payment method to use. Defaults to the account's default payment method.
+</ParamField>
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property in `key=value` format. Repeatable.
+</ParamField>
+
+**Request body**
+
+<ParamField body="transactionType" type="string" required>
+  Must be `AUTHORIZE`, `PURCHASE`, or `CREDIT`.
+</ParamField>
+
+<ParamField body="amount" type="number" required>
+  Transaction amount.
+</ParamField>
+
+<ParamField body="currency" type="string">
+  ISO 4217 currency code. Defaults to the account currency.
+</ParamField>
+
+<ParamField body="paymentExternalKey" type="string">
+  Client-assigned idempotency key for the payment object.
+</ParamField>
+
+<ParamField body="transactionExternalKey" type="string">
+  Client-assigned idempotency key for this transaction.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  ISO 8601 date-time override for the transaction effective date.
+</ParamField>
+
+<ParamField body="properties" type="array">
+  Array of `{ key, value, isUpdatable }` objects forwarded to the plugin.
+</ParamField>
+
+**Responses:** `201 Created` — returns the `Payment` object. `402` — declined. `422` — aborted by control plugin. `502`/`503`/`504` — gateway error.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/payments" \
+  -d '{
+    "transactionType": "PURCHASE",
+    "amount": 49.99,
+    "currency": "USD",
+    "transactionExternalKey": "txn-purchase-001"
+  }'
+```
+
+<Expandable title="Example response">
+```json
+{
+  "accountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+  "paymentId": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+  "paymentNumber": "325",
+  "paymentExternalKey": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+  "authAmount": 0,
+  "capturedAmount": 0,
+  "purchasedAmount": 49.99,
+  "refundedAmount": 0,
+  "creditedAmount": 0,
+  "currency": "USD",
+  "paymentMethodId": "916619a4-02bb-4d3d-b3da-2584ac897b19",
+  "transactions": [
+    {
+      "transactionId": "208d38df-8d5a-4e20-89df-15db4b3516b4",
+      "transactionExternalKey": "txn-purchase-001",
+      "paymentId": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+      "paymentExternalKey": "8fe697d4-2c25-482c-aa45-f6cd5a48186d",
+      "transactionType": "PURCHASE",
+      "amount": 49.99,
+      "currency": "USD",
+      "effectiveDate": "2024-01-15T00:00:00.000Z",
+      "processedAmount": 49.99,
+      "processedCurrency": "USD",
+      "status": "SUCCESS",
+      "gatewayErrorCode": null,
+      "gatewayErrorMsg": null
+    }
+  ]
+}
+```
+</Expandable>
+
+---
+
+## Retrieve a payment by ID
+
+```
+GET /1.0/kb/payments/{paymentId}
+```
+
+Returns the full payment object including all transactions.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata in each transaction.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records in the response.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property in `key=value` format. Repeatable.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  Audit log verbosity: `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — `Payment` object. `400` — invalid UUID. `404` — not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/payments/8fe697d4-2c25-482c-aa45-f6cd5a48186d"
+```
+
+---
+
+## Retrieve a payment by external key
+
+```
+GET /1.0/kb/payments?externalKey={paymentExternalKey}
+```
+
+Looks up a payment using the client-assigned `paymentExternalKey`.
+
+**Query parameters**
+
+<ParamField query="externalKey" type="string" required>
+  The payment's external key.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin-level metadata.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — `Payment` object. `404` — not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/payments?externalKey=pay-2024-001"
+```
+
+---
+
+## List payments (paginated)
+
+```
+GET /1.0/kb/payments/pagination
+```
+
+Returns a paginated list of all payments across the tenant.
+
+**Query parameters**
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based starting index.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum records to return per page.
+</ParamField>
+
+<ParamField query="pluginName" type="string">
+  Filter to payments processed by a specific payment plugin.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin metadata.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records.
+</ParamField>
+
+<ParamField query="audit" type="string" default="NONE">
+  `NONE`, `MINIMAL`, or `FULL`.
+</ParamField>
+
+**Responses:** `200 OK` — array of `Payment` objects with pagination headers.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/payments/pagination?offset=0&limit=50"
+```
+
+---
+
+## Search payments
+
+```
+GET /1.0/kb/payments/search/{searchKey}
+```
+
+Full-text search across payments. The search is delegated to the payment plugin; behavior depends on the plugin's implementation (typically searches `paymentExternalKey`, `transactionExternalKey`, or gateway reference IDs).
+
+**Path parameters**
+
+<ParamField path="searchKey" type="string" required>
+  The value to search for.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="offset" type="integer" default="0">
+  Zero-based starting index.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum records per page.
+</ParamField>
+
+<ParamField query="pluginName" type="string">
+  Restrict search to a specific payment plugin.
+</ParamField>
+
+<ParamField query="withPluginInfo" type="boolean" default="false">
+  Include plugin metadata.
+</ParamField>
+
+<ParamField query="withAttempts" type="boolean" default="false">
+  Include retry attempt records.
+</ParamField>
+
+**Responses:** `200 OK` — array of matching `Payment` objects.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/payments/search/txn-purchase-001"
+```
+
+---
+
+## Capture an authorization
+
+```
+POST /1.0/kb/payments/{paymentId}/captures
+```
+
+Submits a `CAPTURE` transaction against an existing `AUTHORIZE` transaction on the same payment. The payment must have a prior successful `AUTHORIZE` transaction.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment that holds the authorization to capture.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body**
+
+<ParamField body="amount" type="number" required>
+  Amount to capture. May be less than or equal to the authorized amount.
+</ParamField>
+
+<ParamField body="currency" type="string">
+  ISO 4217 currency code. Defaults to the account currency.
+</ParamField>
+
+<ParamField body="transactionExternalKey" type="string">
+  Idempotency key for this capture transaction.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Override for the transaction effective date.
+</ParamField>
+
+**Responses:** `201 Created` — updated `Payment` object. `400` — invalid payment ID. `402` — declined. `404` — payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/payments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/captures" \
+  -d '{
+    "amount": 49.99,
+    "currency": "USD",
+    "transactionExternalKey": "txn-capture-001"
+  }'
+```
+
+---
+
+## Refund a payment
+
+```
+POST /1.0/kb/payments/{paymentId}/refunds
+```
+
+Submits a `REFUND` transaction against a previously captured or purchased payment.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment to refund.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body**
+
+<ParamField body="amount" type="number" required>
+  Amount to refund. Must not exceed the captured amount.
+</ParamField>
+
+<ParamField body="currency" type="string">
+  ISO 4217 currency code. Defaults to the account currency.
+</ParamField>
+
+<ParamField body="transactionExternalKey" type="string">
+  Idempotency key for this refund transaction.
+</ParamField>
+
+**Responses:** `201 Created` — updated `Payment`. `402` — declined by gateway. `404` — payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/payments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/refunds" \
+  -d '{
+    "amount": 49.99,
+    "currency": "USD",
+    "transactionExternalKey": "txn-refund-001"
+  }'
+```
+
+---
+
+## Void a payment
+
+```
+DELETE /1.0/kb/payments/{paymentId}
+```
+
+Submits a `VOID` transaction to cancel an open authorization before it is captured. No request body is required, but you may pass a body to supply `transactionExternalKey` or plugin properties.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment whose authorization to void.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Optional request body**
+
+<ParamField body="transactionExternalKey" type="string">
+  Idempotency key for this void.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Override for the effective date.
+</ParamField>
+
+**Responses:** `204 No Content` — void submitted. `402` — declined. `404` — payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/payments/8fe697d4-2c25-482c-aa45-f6cd5a48186d" \
+  -d '{ "transactionExternalKey": "txn-void-001" }'
+```
+
+---
+
+## Record a chargeback
+
+```
+POST /1.0/kb/payments/{paymentId}/chargebacks
+```
+
+Records a `CHARGEBACK` transaction — a forced reversal initiated by the customer through their bank. Kill Bill does not communicate with the gateway for this operation; it is a bookkeeping record of a dispute that has already been filed.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment being charged back.
+</ParamField>
+
+**Request body**
+
+<ParamField body="amount" type="number" required>
+  Chargeback amount.
+</ParamField>
+
+<ParamField body="currency" type="string">
+  ISO 4217 currency code. Defaults to the account currency.
+</ParamField>
+
+<ParamField body="transactionExternalKey" type="string">
+  Idempotency key for this chargeback transaction.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Date the chargeback was received from the bank.
+</ParamField>
+
+**Responses:** `201 Created` — updated `Payment`. `400` — invalid payment ID. `404` — payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/payments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/chargebacks" \
+  -d '{
+    "amount": 49.99,
+    "currency": "USD",
+    "transactionExternalKey": "txn-cb-001"
+  }'
+```
+
+---
+
+## Record a chargeback reversal
+
+```
+POST /1.0/kb/payments/{paymentId}/chargebackReversals
+```
+
+Records a `CHARGEBACK_REVERSAL` transaction when a chargeback dispute is resolved in the merchant's favor. The `transactionExternalKey` of the original chargeback transaction is required so Kill Bill can associate the reversal with the correct chargeback.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment containing the chargeback to reverse.
+</ParamField>
+
+**Request body**
+
+<ParamField body="transactionExternalKey" type="string" required>
+  External key of the chargeback transaction being reversed.
+</ParamField>
+
+<ParamField body="effectiveDate" type="string">
+  Date the reversal was resolved.
+</ParamField>
+
+**Responses:** `201 Created` — updated `Payment`. `400` — missing `transactionExternalKey`. `404` — payment not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/payments/8fe697d4-2c25-482c-aa45-f6cd5a48186d/chargebackReversals" \
+  -d '{ "transactionExternalKey": "txn-cb-001" }'
+```
+
+---
+
+## Complete a pending transaction
+
+```
+PUT /1.0/kb/payments/{paymentId}
+```
+
+Transitions a `PENDING` transaction to a terminal state. This is used after async gateway flows (such as 3DS) where the final result arrives outside the original HTTP request.
+
+**Path parameters**
+
+<ParamField path="paymentId" type="string" required>
+  UUID of the payment with the pending transaction.
+</ParamField>
+
+**Request body** (optional)
+
+<ParamField body="transactionExternalKey" type="string">
+  External key identifying the specific pending transaction within the payment.
+</ParamField>
+
+<ParamField body="transactionType" type="string">
+  Type of the pending transaction if disambiguation is needed.
+</ParamField>
+
+**Responses:** `204 No Content` — state updated. `404` — payment not found.
+
+<Warning>
+Use `PUT /1.0/kb/payments/{paymentId}` only for completing transactions that are already in `PENDING` status. Attempting to complete a transaction that is already in a terminal state (`SUCCESS` or `FAILURE`) is a no-op.
+</Warning>
+
+---
+
+## Payment object fields
+
+<ResponseField name="accountId" type="string">
+  UUID of the owning account.
+</ResponseField>
+
+<ResponseField name="paymentId" type="string">
+  Kill Bill-assigned UUID for this payment.
+</ResponseField>
+
+<ResponseField name="paymentNumber" type="string">
+  Sequential payment number within the account.
+</ResponseField>
+
+<ResponseField name="paymentExternalKey" type="string">
+  Client-assigned external key.
+</ResponseField>
+
+<ResponseField name="authAmount" type="number">
+  Total amount authorized (sum of successful `AUTHORIZE` transactions).
+</ResponseField>
+
+<ResponseField name="capturedAmount" type="number">
+  Total amount captured.
+</ResponseField>
+
+<ResponseField name="purchasedAmount" type="number">
+  Total amount from `PURCHASE` transactions.
+</ResponseField>
+
+<ResponseField name="refundedAmount" type="number">
+  Total amount refunded.
+</ResponseField>
+
+<ResponseField name="creditedAmount" type="number">
+  Total amount credited to the payment instrument.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  ISO 4217 currency.
+</ResponseField>
+
+<ResponseField name="paymentMethodId" type="string">
+  UUID of the payment method used.
+</ResponseField>
+
+<ResponseField name="transactions" type="array">
+  <Expandable title="PaymentTransaction fields">
+    <ResponseField name="transactionId" type="string">
+      UUID of this transaction.
+    </ResponseField>
+    <ResponseField name="transactionExternalKey" type="string">
+      Client-assigned idempotency key.
+    </ResponseField>
+    <ResponseField name="paymentId" type="string">
+      UUID of the parent payment.
+    </ResponseField>
+    <ResponseField name="paymentExternalKey" type="string">
+      External key of the parent payment.
+    </ResponseField>
+    <ResponseField name="transactionType" type="string">
+      One of `AUTHORIZE`, `CAPTURE`, `PURCHASE`, `VOID`, `REFUND`, `CHARGEBACK`, `CHARGEBACK_REVERSAL`, `CREDIT`.
+    </ResponseField>
+    <ResponseField name="amount" type="number">
+      Requested transaction amount.
+    </ResponseField>
+    <ResponseField name="currency" type="string">
+      Requested currency.
+    </ResponseField>
+    <ResponseField name="effectiveDate" type="string">
+      ISO 8601 date-time of the transaction.
+    </ResponseField>
+    <ResponseField name="processedAmount" type="number">
+      Amount actually processed by the gateway (may differ from `amount`).
+    </ResponseField>
+    <ResponseField name="processedCurrency" type="string">
+      Currency actually processed by the gateway.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      `SUCCESS`, `FAILURE`, `PENDING`, `UNKNOWN`, or `PAYMENT_FAILURE`.
+    </ResponseField>
+    <ResponseField name="gatewayErrorCode" type="string">
+      Gateway-provided error code when the transaction fails.
+    </ResponseField>
+    <ResponseField name="gatewayErrorMsg" type="string">
+      Human-readable gateway error message.
+    </ResponseField>
+    <ResponseField name="firstPaymentReferenceId" type="string">
+      Primary gateway reference ID (e.g., charge ID).
+    </ResponseField>
+    <ResponseField name="secondPaymentReferenceId" type="string">
+      Secondary gateway reference ID if the gateway provides one.
+    </ResponseField>
+    <ResponseField name="properties" type="array">
+      Plugin-provided key-value pairs.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

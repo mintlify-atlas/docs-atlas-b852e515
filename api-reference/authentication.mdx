@@ -1,0 +1,133 @@
+---
+title: "Authenticating Kill Bill API requests"
+description: "Kill Bill uses two independent authentication layers: HTTP Basic Auth for server access and tenant API key/secret headers for multi-tenant isolation."
+---
+
+Every request to the Kill Bill API must pass two independent authentication layers. The first authenticates you to the Kill Bill server. The second identifies which tenant your request belongs to. Both must be present, or the server rejects the request.
+
+## Authentication layers
+
+<Steps>
+  <Step title="Server-level HTTP Basic Auth">
+    Kill Bill uses HTTP Basic Authentication to control access to the server itself. The default credentials are `admin` / `password`. You pass them with the `-u` flag in curl or via the `Authorization: Basic ...` header.
+
+    These credentials are configured in the Kill Bill `shiro.ini` (or your chosen security realm) and are independent of any tenant.
+  </Step>
+  <Step title="Tenant-level API key and secret">
+    Kill Bill is a multi-tenant platform. Each tenant has its own API key and secret, passed as request headers on every call. Kill Bill uses these headers to route the request to the correct tenant context and apply the correct catalog, overdue configuration, and plugin settings.
+
+    | Header                  | Description                          |
+    |-------------------------|--------------------------------------|
+    | `X-Killbill-ApiKey`     | The tenant's API key                 |
+    | `X-Killbill-ApiSecret`  | The tenant's API secret              |
+
+    <Note>
+      When you create a tenant through Kaui (the Kill Bill admin UI), Kaui automatically generates and stores the API key and secret for that tenant.
+    </Note>
+  </Step>
+</Steps>
+
+## Full request example
+
+Every API call must include both layers plus the `X-Killbill-CreatedBy` header for write operations:
+
+```bash
+curl -u admin:password \
+  -H "X-Killbill-ApiKey: your-api-key" \
+  -H "X-Killbill-ApiSecret: your-api-secret" \
+  -H "X-Killbill-CreatedBy: your-username" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  https://your-killbill-host:8080/1.0/kb/accounts
+```
+
+For read-only `GET` requests, `X-Killbill-CreatedBy` is not required:
+
+```bash
+curl -u admin:password \
+  -H "X-Killbill-ApiKey: your-api-key" \
+  -H "X-Killbill-ApiSecret: your-api-secret" \
+  https://your-killbill-host:8080/1.0/kb/accounts/pagination
+```
+
+## The X-Killbill-CreatedBy header
+
+`X-Killbill-CreatedBy` is not part of authentication, but it is required on all write operations (`POST`, `PUT`, `DELETE`). Kill Bill records this value in its immutable audit log alongside every change. It should identify the person or automated service making the call.
+
+```bash
+-H "X-Killbill-CreatedBy: jane-ops"
+```
+
+Omitting this header on a write request returns `400 Bad Request`.
+
+## Endpoints that do not require tenant headers
+
+A small set of endpoints bypass the tenant requirement by design:
+
+| Endpoint path             | Reason                                                                       |
+|---------------------------|------------------------------------------------------------------------------|
+| `POST /1.0/kb/tenants`    | Tenant creation is a bootstrap operation — no tenant exists yet             |
+| `/1.0/kb/security/*`      | Permission checks are cross-tenant operations                               |
+| `/1.0/kb/nodesInfo`       | Node status is a cluster-wide, cross-tenant resource                        |
+| `/plugins/*`              | Plugin endpoints delegate authentication responsibility to the plugin itself |
+
+These paths are identified in `KillBillApiDefinition.requiresTenantInformation()`. All other paths under `/1.0/kb/` require both `X-Killbill-ApiKey` and `X-Killbill-ApiSecret`.
+
+<Info>
+Static resources (the welcome screen, Swagger UI, etc.) are also exempt from tenant headers because they are served before any Kill Bill context is established.
+</Info>
+
+## Authentication error responses
+
+<Tabs>
+  <Tab title="Missing Basic Auth credentials">
+    If you omit the HTTP Basic Auth header entirely, the server returns:
+
+    ```
+    HTTP/1.1 401 Unauthorized
+    WWW-Authenticate: Basic realm="Kill Bill"
+    ```
+  </Tab>
+  <Tab title="Invalid Basic Auth credentials">
+    If the `admin` username or password is wrong, the server returns:
+
+    ```
+    HTTP/1.1 401 Unauthorized
+    ```
+
+    ```json
+    {
+      "code": 401,
+      "message": "Unauthorized"
+    }
+    ```
+  </Tab>
+  <Tab title="Missing or invalid tenant headers">
+    If `X-Killbill-ApiKey` or `X-Killbill-ApiSecret` is absent or does not match a known tenant, Kill Bill returns:
+
+    ```
+    HTTP/1.1 401 Unauthorized
+    ```
+
+    ```json
+    {
+      "code": 401,
+      "message": "Unauthorized"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Security scheme summary
+
+The three security schemes registered in the Kill Bill Swagger definition map directly to the headers above:
+
+| Scheme name           | Type       | Header / mechanism           |
+|-----------------------|------------|------------------------------|
+| `basicAuth`           | HTTP Basic | `Authorization` header       |
+| `Killbill Api Key`    | API key    | `X-Killbill-ApiKey` header   |
+| `Killbill Api Secret` | API key    | `X-Killbill-ApiSecret` header|
+
+<Warning>
+Never commit API keys, secrets, or Basic Auth credentials to source control. Rotate tenant secrets through the Tenant API (`PUT /1.0/kb/tenants`) if they are compromised.
+</Warning>

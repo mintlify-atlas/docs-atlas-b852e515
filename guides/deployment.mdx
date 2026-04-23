@@ -1,0 +1,213 @@
+---
+title: "Deploying Kill Bill in production"
+description: "Explore deployment options for Kill Bill — from Docker and AWS one-click to bare-metal WAR — and learn the external dependencies required to go live."
+---
+
+Kill Bill is a Java web application that can be deployed in several ways depending on your infrastructure. This page covers the supported deployment targets, required external dependencies, and the two runtime profiles — `killbill` (full stack) and `killpay` (payments only).
+
+<Note>
+  Kill Bill requires **Java 11 or later**. Ensure your JVM is up to date before deploying. The application has been tested with OpenJDK 11 and 17.
+</Note>
+
+## Hosted sandbox
+
+The fastest way to evaluate Kill Bill without managing infrastructure is [cloud.killbill.io](https://cloud.killbill.io). It provides a fully managed sandbox environment where you can test the API, load catalogs, and explore plugins — no installation required.
+
+---
+
+## Deployment options
+
+<CardGroup cols={3}>
+  <Card title="Docker" icon="docker">
+    The recommended path for new deployments. A single `docker-compose` file brings up Kill Bill together with its database.
+  </Card>
+  <Card title="AWS one-click" icon="aws">
+    Launch a production-ready Kill Bill instance from the AWS Marketplace with preconfigured AMIs.
+  </Card>
+  <Card title="Bare-metal WAR" icon="server">
+    Deploy the `killbill` WAR into any Servlet 3.x container (Tomcat, Jetty) for maximum control over the runtime environment.
+  </Card>
+</CardGroup>
+
+---
+
+## Docker quick start
+
+The `killbill/killbill` image bundles the full Kill Bill stack. The application expects a running MySQL or PostgreSQL instance and the connection details passed via environment variables or a properties file.
+
+```bash
+docker pull killbill/killbill
+```
+
+A minimal `docker-compose.yml` that wires Kill Bill to a local MySQL container:
+
+```yaml
+version: "3.8"
+services:
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: killbill
+      MYSQL_DATABASE: killbill
+    ports:
+      - "3306:3306"
+
+  killbill:
+    image: killbill/killbill
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+    environment:
+      KILLBILL_DAO_URL: jdbc:mysql://db:3306/killbill
+      KILLBILL_DAO_USER: root
+      KILLBILL_DAO_PASSWORD: killbill
+```
+
+Start the stack:
+
+```bash
+docker compose up -d
+```
+
+Kill Bill will be available at `http://localhost:8080/1.0/kb/test/clock` once the container reports healthy.
+
+---
+
+## External dependencies
+
+### Database
+
+Kill Bill requires a relational database for all persistent state — accounts, subscriptions, invoices, payments, audit logs, and notification queues. Both **MySQL 8+** and **PostgreSQL 13+** are supported.
+
+The two key JDBC properties that every deployment must configure are:
+
+```properties
+org.killbill.dao.url=jdbc:mysql://127.0.0.1:3306/killbill
+org.killbill.dao.user=root
+org.killbill.dao.password=root
+```
+
+OSGI plugins share the same database by default. Override the plugin data source with:
+
+```properties
+org.killbill.billing.osgi.dao.url=jdbc:mysql://127.0.0.1:3306/killbill
+org.killbill.billing.osgi.dao.user=root
+org.killbill.billing.osgi.dao.password=root
+```
+
+<Warning>
+  Never run Kill Bill in production against the default `root`/`root` credentials. Create a dedicated database user with a strong password and grant it only the permissions required for the `killbill` schema.
+</Warning>
+
+Kill Bill ships with [Flyway](https://flywaydb.org) migrations. The schema is applied automatically on first start. For MySQL, ensure your database uses the `utf8mb4` character set and `utf8mb4_unicode_ci` collation.
+
+### No external message broker required
+
+Kill Bill's internal event bus (`org.killbill.persistent.bus.*`) and notification queue (`org.killbill.notificationq.*`) are backed by the same relational database — no Kafka, RabbitMQ, or Redis is needed for the core system.
+
+---
+
+## WAR deployment (bare metal)
+
+The `profiles/killbill` Maven module produces the deployable WAR artifact. To build it from source:
+
+```bash
+mvn -pl profiles/killbill -am -DskipTests clean package
+```
+
+The resulting WAR at `profiles/killbill/target/killbill-*.war` can be dropped into any Servlet 3.x container.
+
+### Tomcat example
+
+```bash
+cp profiles/killbill/target/killbill-*.war $CATALINA_HOME/webapps/ROOT.war
+```
+
+Point Kill Bill at your configuration file by setting the system property at JVM startup:
+
+```bash
+JAVA_OPTS="-Dorg.killbill.server.properties=file:///etc/killbill/killbill.properties"
+```
+
+A minimal `/etc/killbill/killbill.properties`:
+
+```properties
+org.killbill.dao.url=jdbc:mysql://db-host:3306/killbill
+org.killbill.dao.user=killbill
+org.killbill.dao.password=s3cr3t
+
+org.killbill.catalog.uri=file:///etc/killbill/catalog.xml
+
+org.killbill.server.multitenant=true
+```
+
+---
+
+## Kill Pay profile (payments only)
+
+`killpay` is a stripped-down profile that runs only the payments subsystem — no invoicing, no subscription engine. This is useful when you want to use Kill Bill purely as a payment orchestration layer.
+
+<Tabs>
+  <Tab title="Docker">
+    ```bash
+    docker run -e KB_PROFILE=killpay killbill/killbill
+    ```
+  </Tab>
+  <Tab title="WAR">
+    Build the payments-only WAR from the `profiles/killpay` module:
+    ```bash
+    mvn -pl profiles/killpay -am -DskipTests clean package
+    ```
+    Deploy `profiles/killpay/target/killpay-*.war` in the same way as the full WAR.
+  </Tab>
+</Tabs>
+
+The `killpay` profile accepts the same database and bus configuration properties as the full `killbill` profile. Invoicing and catalog properties are ignored.
+
+---
+
+## AWS one-click
+
+Kill Bill publishes AMIs on the [AWS Marketplace](https://aws.amazon.com/marketplace/pp/prodview-nochkgas7vjqo). The AMI bundles Tomcat, Kill Bill, the `killbill-admin-ui` Sinatra app, and an embedded MariaDB suitable for single-node evaluation.
+
+<Steps>
+  <Step title="Subscribe on the Marketplace">
+    Navigate to the Kill Bill listing on the AWS Marketplace and click **Continue to Subscribe**.
+  </Step>
+  <Step title="Launch the instance">
+    Choose an instance type (t3.medium or larger is recommended), select your VPC and security group, and launch. Port 8080 (Kill Bill API) and port 443 (admin UI) must be open inbound.
+  </Step>
+  <Step title="SSH and configure">
+    SSH into the instance and edit `/var/lib/tomcat/conf/killbill.properties` to point to an external RDS instance before going to production.
+  </Step>
+</Steps>
+
+<Note>
+  The bundled MariaDB in the Marketplace AMI is intended for evaluation only. For production, use Amazon RDS for MySQL or Aurora.
+</Note>
+
+---
+
+## Multi-tenant mode
+
+Kill Bill defaults to multi-tenant mode. Confirm this in your properties file:
+
+```properties
+org.killbill.server.multitenant=true
+```
+
+In multi-tenant mode every API call must include the `X-Killbill-ApiKey` and `X-Killbill-ApiSecret` headers that identify the tenant. Disable multi-tenant mode only for isolated single-tenant deployments where you are certain only one tenant will ever exist.
+
+---
+
+## Java version requirements
+
+| Java version | Status |
+|---|---|
+| Java 8 | Not supported |
+| Java 11 | Supported (LTS, minimum) |
+| Java 17 | Supported (LTS, recommended) |
+| Java 21 | Supported (LTS) |
+
+Set `JAVA_HOME` to a Java 11+ JDK before starting the container or application server. The WAR will refuse to start on older runtimes.

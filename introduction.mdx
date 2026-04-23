@@ -1,0 +1,72 @@
+---
+title: "Kill Bill: open-source subscription billing and payments"
+description: "Kill Bill is a self-hosted, API-driven platform for subscription billing, payment processing, and revenue automation — with no vendor lock-in."
+---
+
+Kill Bill is the leading open-source subscription billing and payments platform. Founded in 2010, it has been adopted by SaaS companies and e-commerce businesses that need complete control over their billing infrastructure. You get automated invoicing, multi-gateway payment processing, usage metering, dunning, and multi-tenancy — all accessible through a REST API and backed by a persistent event bus.
+
+Because Kill Bill is open-source under the Apache 2.0 license, you run it on your own infrastructure. You own the data, you control the configuration, and you extend the platform through plugins without waiting on a SaaS vendor's roadmap.
+
+## Key features
+
+<Columns cols={2}>
+  <Card title="Subscription management" icon="arrows-rotate" href="/guides/subscriptions">
+    Create, upgrade, downgrade, pause, and cancel subscriptions. Model trial periods, discount phases, and evergreen billing in the catalog.
+  </Card>
+  <Card title="Product catalog" icon="tag" href="/guides/catalog">
+    Define products, plans, phases, and price lists in a versioned XML catalog. Supports recurring, fixed, and usage-based billing in multiple currencies.
+  </Card>
+  <Card title="Automated invoicing" icon="file-invoice" href="/guides/invoicing">
+    Invoices are generated automatically from subscription events. Supports proration, adjustments, credits, and tax plugins.
+  </Card>
+  <Card title="Payment processing" icon="credit-card" href="/guides/payments">
+    Process payments through any gateway via plugins. Built-in retry logic, chargebacks, refunds, and payment method vault.
+  </Card>
+  <Card title="Usage-based billing" icon="chart-line" href="/guides/usage-billing">
+    Record consumable or capacity-based usage and bill customers monthly in arrear with tiered pricing.
+  </Card>
+  <Card title="Dunning and overdue" icon="bell" href="/guides/overdue">
+    Configure overdue states with time-based conditions that automatically block entitlements and trigger notifications.
+  </Card>
+  <Card title="Multi-tenancy" icon="building" href="/guides/multi-tenancy">
+    Run multiple isolated tenants on a single instance. Each tenant has its own catalog, configuration, plugins, and data.
+  </Card>
+  <Card title="Plugin system" icon="puzzle-piece" href="/guides/plugins">
+    Extend Kill Bill with OSGI plugins for payment gateways, analytics, tax, invoicing templates, and more.
+  </Card>
+</Columns>
+
+## Architecture overview
+
+Kill Bill is composed of a set of internal modules that interact through a persistent event bus. Understanding how they fit together helps you reason about billing flows.
+
+```
+Account → Catalog → Subscription → Invoice → Payment
+```
+
+| Module | Responsibility |
+|--------|---------------|
+| **Account** | Stores customer identity, currency, time zone, and payment method references. |
+| **Catalog** | Versioned XML definition of products, plans, phases, and pricing rules. Uploaded per tenant. |
+| **Entitlement / Subscription** | Manages the lifecycle of a customer's subscription to a plan — creation, changes, cancellation, and blocking states. |
+| **Invoice** | Listens for subscription events and generates invoices automatically. Handles proration, credits, and adjustments. |
+| **Payment** | Processes invoices against a payment method via gateway plugins. Tracks transaction state and handles retries. |
+| **Overdue** | Evaluates unpaid invoice age against configured thresholds and transitions accounts through overdue states. |
+| **Tenant** | Isolates catalog, configuration, and data per logical tenant within a single Kill Bill deployment. |
+
+When a subscription is created or changes phase, the entitlement module publishes an event. The invoice module consumes that event and generates an invoice. Once an invoice exists, the payment module attempts to collect using the account's default payment method.
+
+<Note>
+  Every billing action in Kill Bill is audit-logged. You can retrieve the full history of any object — account, subscription, invoice, or payment — including the context of who made each change and why.
+</Note>
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="Get started" icon="rocket" href="/quickstart">
+    Deploy Kill Bill and run your first subscription in minutes.
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts">
+    Learn the data model before you start integrating.
+  </Card>
+</Columns>

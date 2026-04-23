@@ -1,0 +1,345 @@
+---
+title: "Security API — users, roles, and permissions"
+description: "Manage Kill Bill API users and role-based access control. Create users, assign roles, define granular permissions, and inspect the current session's identity."
+---
+
+Kill Bill's security system is built on Apache Shiro and provides role-based access control (RBAC) for all API calls. You create users and assign them named roles. Each role holds a set of permission strings that gate which API operations the user can perform. The Security API lets you manage this entire hierarchy programmatically.
+
+<Note>
+Security endpoints operate at the server level, not the tenant level. They do not require the `X-Killbill-ApiKey` or `X-Killbill-ApiSecret` tenant headers. You authenticate with HTTP Basic Auth only. The credentials you use must themselves have sufficient permission to manage users and roles.
+</Note>
+
+---
+
+## Inspect the current session
+
+### List current user's permissions
+
+Returns the full set of permission strings held by the authenticated user. Use this to verify what operations a given set of credentials can perform.
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/security/permissions"
+```
+
+**Response**
+
+```json
+[
+  "account:billing:create",
+  "account:billing:update",
+  "invoice:*",
+  "payment:*"
+]
+```
+
+### Get current user subject
+
+Returns identity and session information for the authenticated user, as resolved by Apache Shiro.
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/security/subject"
+```
+
+**Response**
+
+```json
+{
+  "principal": "admin",
+  "isAuthenticated": true,
+  "isRemembered": false,
+  "session": {
+    "id": "3a7b2c1d-...",
+    "host": "127.0.0.1",
+    "startTimestamp": "2024-01-15T10:00:00.000Z",
+    "lastAccessTime": "2024-01-15T10:05:00.000Z",
+    "timeout": 1800000,
+    "attributes": {}
+  }
+}
+```
+
+<Expandable title="Subject response fields">
+  <ResponseField name="principal" type="string">
+    The authenticated username.
+  </ResponseField>
+  <ResponseField name="isAuthenticated" type="boolean">
+    Whether the subject is currently authenticated (credentials verified this session).
+  </ResponseField>
+  <ResponseField name="isRemembered" type="boolean">
+    Whether the subject is authenticated via a remembered identity (e.g., "remember me" cookie), rather than active credentials.
+  </ResponseField>
+  <ResponseField name="session" type="object">
+    The current Shiro session. `null` if no session exists.
+  </ResponseField>
+</Expandable>
+
+---
+
+## Managing users
+
+### Create a user
+
+Creates a new user and assigns one or more roles to them.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/security/users" \
+  -d '{
+    "username": "jane-billing",
+    "password": "s3cr3t!",
+    "roles": ["billing-manager"]
+  }'
+```
+
+<Expandable title="Request body fields">
+  <ParamField body="username" type="string" required>
+    The login username. Must be unique across the system.
+  </ParamField>
+  <ParamField body="password" type="string" required>
+    The initial password. Kill Bill stores it as a salted hash.
+  </ParamField>
+  <ParamField body="roles" type="array" required>
+    List of role names to assign to the user. Each role must already exist. A user can hold multiple roles; permissions are the union of all roles.
+  </ParamField>
+</Expandable>
+
+Returns `201 Created` with a `Location` header pointing to the user's roles resource.
+
+### Get a user's roles
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane-billing/roles"
+```
+
+**Response**
+
+```json
+{
+  "username": "jane-billing",
+  "roles": ["billing-manager"]
+}
+```
+
+### Update a user's roles
+
+Replaces the user's current role assignments with the provided list.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane-billing/roles" \
+  -d '{
+    "username": "jane-billing",
+    "roles": ["billing-manager", "support-read-only"]
+  }'
+```
+
+Returns `204 No Content` on success.
+
+### Update a user's password
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane-billing/password" \
+  -d '{
+    "username": "jane-billing",
+    "password": "n3wP@ssw0rd!"
+  }'
+```
+
+Returns `204 No Content` on success.
+
+### Invalidate (deactivate) a user
+
+Marks the user as inactive. The user can no longer authenticate. Their audit history is preserved.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/security/users/jane-billing"
+```
+
+Returns `204 No Content` on success.
+
+---
+
+## Managing roles
+
+### Create a role
+
+Creates a named role with a list of permission strings. The role can then be assigned to users.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/security/roles" \
+  -d '{
+    "role": "billing-manager",
+    "permissions": [
+      "account:billing:create",
+      "account:billing:update",
+      "invoice:*",
+      "payment:*",
+      "subscription:*"
+    ]
+  }'
+```
+
+<Expandable title="Request body fields">
+  <ParamField body="role" type="string" required>
+    The role name. Must be unique. Use a descriptive name that reflects the role's function.
+  </ParamField>
+  <ParamField body="permissions" type="array" required>
+    List of permission strings granted to this role. Use `*` as a wildcard to grant all operations within a category (e.g., `invoice:*`).
+  </ParamField>
+</Expandable>
+
+Returns `201 Created` with a `Location` header pointing to the role's resource.
+
+### Get a role's permissions
+
+```bash
+curl -v \
+  -u admin:password \
+  "http://127.0.0.1:8080/1.0/kb/security/roles/billing-manager"
+```
+
+**Response**
+
+```json
+{
+  "role": "billing-manager",
+  "permissions": [
+    "account:billing:create",
+    "account:billing:update",
+    "invoice:*",
+    "payment:*",
+    "subscription:*"
+  ]
+}
+```
+
+### Update a role's permissions
+
+Replaces the current permission list for the role. All users holding this role immediately gain the new permissions on their next request.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/security/roles" \
+  -d '{
+    "role": "billing-manager",
+    "permissions": [
+      "account:billing:create",
+      "account:billing:update",
+      "invoice:*",
+      "payment:*",
+      "subscription:*",
+      "usage:*"
+    ]
+  }'
+```
+
+Returns `204 No Content` on success.
+
+---
+
+## Permission reference
+
+Kill Bill's permission strings follow the pattern `<resource>:<sub-resource>:<operation>`. You can use `*` as a wildcard at any level.
+
+| Pattern | Grants |
+|---|---|
+| `account:*` | All operations on accounts |
+| `account:billing:create` | Create billing operations on accounts (invoices, payments) |
+| `account:billing:update` | Update billing state on accounts |
+| `account:credit:create` | Apply credits to accounts |
+| `invoice:*` | All invoice operations |
+| `payment:*` | All payment operations |
+| `subscription:*` | All subscription and entitlement operations |
+| `catalog:*` | All catalog operations |
+| `overdue:*` | All overdue configuration operations |
+| `usage:*` | All usage recording and retrieval operations |
+| `tag:*` | All tag and tag definition operations |
+| `customField:*` | All custom field operations |
+| `tenantKvStore:*` | All tenant key-value store operations |
+| `*` | All operations (superuser) |
+
+<Warning>
+Assigning the `*` (wildcard) permission is equivalent to granting full administrative access. Reserve this for system accounts and trusted operators.
+</Warning>
+
+---
+
+## Common role templates
+
+<Tabs>
+  <Tab title="Read-only support">
+    ```json
+    {
+      "role": "support-read-only",
+      "permissions": [
+        "account:*",
+        "invoice:*",
+        "payment:*",
+        "subscription:*"
+      ]
+    }
+    ```
+    Can view everything but cannot make changes.
+  </Tab>
+  <Tab title="Billing manager">
+    ```json
+    {
+      "role": "billing-manager",
+      "permissions": [
+        "account:billing:create",
+        "account:billing:update",
+        "account:credit:create",
+        "invoice:*",
+        "payment:*",
+        "subscription:*",
+        "usage:*"
+      ]
+    }
+    ```
+    Can manage the full billing lifecycle.
+  </Tab>
+  <Tab title="Catalog admin">
+    ```json
+    {
+      "role": "catalog-admin",
+      "permissions": [
+        "catalog:*",
+        "overdue:*"
+      ]
+    }
+    ```
+    Can upload and modify the product catalog and overdue configuration only.
+  </Tab>
+</Tabs>

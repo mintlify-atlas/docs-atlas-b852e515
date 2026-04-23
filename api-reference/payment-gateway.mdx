@@ -1,0 +1,278 @@
+---
+title: "Payment Gateway API — HPP and webhook handling"
+description: "Reference for Kill Bill's hosted payment page form descriptor endpoints and gateway notification webhook processing for async payment flows."
+---
+
+The Payment Gateway API enables two integration patterns that sit outside the standard synchronous request-response flow: **Hosted Payment Pages (HPP)** and **gateway notification processing**. Both are implemented through payment plugins — Kill Bill delegates the heavy lifting to the plugin, which knows the gateway's specific protocol.
+
+## Hosted payment pages
+
+In an HPP flow, instead of collecting payment details directly (and assuming PCI scope), you redirect the customer to a payment form hosted by the gateway. The flow works like this:
+
+<Steps>
+  <Step title="Request a form descriptor">
+    Your server calls Kill Bill's HPP endpoint. Kill Bill asks the payment plugin to build a form descriptor — the URL, HTTP method, and hidden fields needed to render the redirect form.
+  </Step>
+  <Step title="Redirect the customer">
+    Your frontend renders the form using the descriptor's `formUrl`, `formMethod`, and `formFields`, then submits it to redirect the customer to the gateway's hosted page.
+  </Step>
+  <Step title="Customer completes payment">
+    The customer enters their payment details on the gateway's page and submits. The gateway processes the payment.
+  </Step>
+  <Step title="Gateway notifies Kill Bill">
+    The gateway sends a webhook (POST or GET) to Kill Bill's notification endpoint with the payment result. Kill Bill passes the raw payload to the plugin, which parses it and updates the payment state accordingly.
+  </Step>
+</Steps>
+
+### Registering the notification URL
+
+Configure your gateway to send notifications to:
+
+```
+POST http://your-killbill-host:8080/1.0/kb/paymentGateways/notification/{pluginName}
+```
+
+Replace `{pluginName}` with the plugin's self-reported name (e.g., `killbill-stripe`, `killbill-paypal-express`). The exact configuration location varies by gateway, but it is typically called "webhook URL", "IPN URL", or "return URL" in the gateway's dashboard settings.
+
+<Info>
+The notification endpoint accepts any content type (`*/*`). The raw body or query string is forwarded verbatim to the plugin for parsing. Kill Bill does not attempt to interpret the gateway payload itself.
+</Info>
+
+---
+
+## Build a hosted payment page form descriptor (combo)
+
+```
+POST /1.0/kb/paymentGateways/hosted/form
+```
+
+Combo endpoint that creates or finds the account and payment method in a single call, then returns the HPP form descriptor. Use this for guest checkout flows where the customer may not have an existing Kill Bill account.
+
+**Query parameters**
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body** — `ComboHostedPaymentPage`
+
+<ParamField body="account" type="object">
+  Account fields (same structure as `POST /1.0/kb/accounts`). If the account already exists by `externalKey`, it is reused.
+</ParamField>
+
+<ParamField body="paymentMethod" type="object">
+  Payment method fields. If omitted, the account's default payment method is used.
+</ParamField>
+
+<ParamField body="paymentMethodPluginProperties" type="array">
+  Plugin properties specific to payment method creation, in `{ key, value, isUpdatable }` format.
+</ParamField>
+
+<ParamField body="hostedPaymentPageFields" type="object">
+  <Expandable title="hostedPaymentPageFields">
+    <ParamField body="formFields" type="array">
+      Array of `{ key, value, isUpdatable }` pairs passed to the plugin as custom form fields. Use these to supply gateway-specific parameters such as the return URL, cancel URL, locale, or item description.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Responses:** `200 OK` — `HostedPaymentPageFormDescriptor` object. `400` — invalid account or payment method data.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/paymentGateways/hosted/form" \
+  -d '{
+    "account": {
+      "name": "John Doe",
+      "email": "john@example.com",
+      "currency": "USD",
+      "externalKey": "cust-john-001"
+    },
+    "paymentMethod": {
+      "pluginName": "killbill-paypal-express"
+    },
+    "hostedPaymentPageFields": {
+      "formFields": [
+        { "key": "returnUrl",  "value": "https://example.com/payment/success", "isUpdatable": false },
+        { "key": "cancelUrl",  "value": "https://example.com/payment/cancel",  "isUpdatable": false },
+        { "key": "amount",     "value": "49.99",                               "isUpdatable": false },
+        { "key": "currency",   "value": "USD",                                 "isUpdatable": false }
+      ]
+    }
+  }'
+```
+
+<Expandable title="Example response">
+```json
+{
+  "kbAccountId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+  "formMethod": "POST",
+  "formUrl": "https://www.sandbox.paypal.com/checkoutnow",
+  "formFields": {
+    "token": "EC-8YE93038XS0928640",
+    "cmd": "_express-checkout"
+  },
+  "properties": {}
+}
+```
+</Expandable>
+
+---
+
+## Build a hosted payment page form descriptor (existing account)
+
+```
+POST /1.0/kb/paymentGateways/hosted/form/{accountId}
+```
+
+Generates an HPP form descriptor for an existing Kill Bill account. The account and its payment method must already exist.
+
+**Path parameters**
+
+<ParamField path="accountId" type="string" required>
+  UUID of the existing Kill Bill account.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentMethodId" type="string">
+  UUID of the payment method to use. Defaults to the account's default payment method.
+</ParamField>
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s). Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body** — `HostedPaymentPageFields`
+
+<ParamField body="formFields" type="array">
+  Array of `{ key, value, isUpdatable }` pairs forwarded to the plugin as custom gateway parameters (return URL, cancel URL, order description, etc.).
+</ParamField>
+
+**Responses:** `200 OK` — `HostedPaymentPageFormDescriptor` object. `404` — account not found.
+
+```bash
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/paymentGateways/hosted/form/2ad52f53-85ae-408a-9879-32a7e59dd03d" \
+  -d '{
+    "formFields": [
+      { "key": "returnUrl", "value": "https://example.com/payment/success", "isUpdatable": false },
+      { "key": "cancelUrl", "value": "https://example.com/payment/cancel",  "isUpdatable": false },
+      { "key": "amount",    "value": "49.99",                               "isUpdatable": false }
+    ]
+  }'
+```
+
+---
+
+## Process a gateway notification (webhook)
+
+```
+POST /1.0/kb/paymentGateways/notification/{pluginName}
+```
+
+Receives an inbound webhook from a payment gateway and hands the raw payload to the named payment plugin for processing. The plugin parses the notification, determines the payment outcome, and updates the Kill Bill payment state. Kill Bill then returns whatever response the plugin instructs — status code, body, and headers — directly to the gateway.
+
+**Path parameters**
+
+<ParamField path="pluginName" type="string" required>
+  The plugin name that should handle this notification (e.g., `killbill-stripe`, `killbill-braintree`). Must match the plugin's registered name exactly.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="paymentControlPluginName" type="string">
+  Control plugin name(s) to run alongside the notification handler. Repeatable.
+</ParamField>
+
+<ParamField query="pluginProperty" type="string">
+  Plugin property `key=value`. Repeatable.
+</ParamField>
+
+**Request body**
+
+The raw notification payload from the gateway. Kill Bill accepts any content type (`*/*`). If the body is empty, Kill Bill falls back to the raw query string from the request URI (supporting gateways that send GET-based callbacks).
+
+**Responses:** The HTTP status, body, and headers are determined entirely by the plugin based on the gateway's notification protocol. Typically `200 OK` with an acknowledgment body expected by the gateway.
+
+<Tabs>
+  <Tab title="Stripe webhook">
+    ```bash
+    curl -v \
+      -H "Content-Type: application/json" \
+      -H "Stripe-Signature: t=1714000000,v1=abcdef..." \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/paymentGateways/notification/killbill-stripe" \
+      -d '{
+        "id": "evt_1NxQeJ2eZvKYlo2C",
+        "type": "payment_intent.succeeded",
+        "data": {
+          "object": {
+            "id": "pi_1NxQeJ2eZvKYlo2C",
+            "amount": 4999,
+            "currency": "usd",
+            "status": "succeeded"
+          }
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="PayPal IPN">
+    ```bash
+    curl -v \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/paymentGateways/notification/killbill-paypal-express" \
+      --data-urlencode "payment_status=Completed" \
+      --data-urlencode "txn_id=3XD80073RK9901234" \
+      --data-urlencode "mc_gross=49.99" \
+      --data-urlencode "mc_currency=USD"
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+The notification endpoint is unauthenticated by design — it must be reachable from the gateway's servers, which do not have Kill Bill credentials. Validate notification authenticity inside the plugin (e.g., by verifying Stripe webhook signatures or PayPal IPN verification handshakes).
+</Warning>
+
+---
+
+## HostedPaymentPageFormDescriptor object fields
+
+<ResponseField name="kbAccountId" type="string">
+  UUID of the Kill Bill account for which the form was built.
+</ResponseField>
+
+<ResponseField name="formMethod" type="string">
+  HTTP method to use when submitting the form to the gateway (typically `GET` or `POST`).
+</ResponseField>
+
+<ResponseField name="formUrl" type="string">
+  Gateway URL to which the form should redirect.
+</ResponseField>
+
+<ResponseField name="formFields" type="object">
+  Key-value map of hidden form fields to include in the redirect (e.g., gateway tokens, signatures, redirect parameters). Render these as `<input type="hidden">` elements in the form.
+</ResponseField>
+
+<ResponseField name="properties" type="object">
+  Additional plugin-provided metadata (not part of the gateway form itself).
+</ResponseField>

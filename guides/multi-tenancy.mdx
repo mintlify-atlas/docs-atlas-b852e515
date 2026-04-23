@@ -1,0 +1,298 @@
+---
+title: "Multi-tenant billing with Kill Bill"
+description: "Run fully isolated billing environments—each with its own catalog, configuration, and plugin settings—on a single Kill Bill instance."
+---
+
+Kill Bill is designed from the ground up for multi-tenancy. Every account, subscription, invoice, and payment belongs to exactly one tenant, and no data is ever shared across tenant boundaries. This means you can run a SaaS platform, a marketplace, or multiple brands from a single Kill Bill deployment without any risk of cross-tenant data leakage.
+
+## What tenant isolation covers
+
+Each tenant maintains its own copy of:
+
+<CardGroup cols={2}>
+  <Card title="Catalog" icon="book">
+    Products, plans, price lists, and billing rules are scoped per tenant. Uploading a new catalog version for one tenant has no effect on others.
+  </Card>
+  <Card title="Overdue configuration" icon="clock">
+    Dunning schedules and overdue state machines are configured independently per tenant.
+  </Card>
+  <Card title="Invoice templates" icon="file-invoice">
+    HTML invoice templates and translation bundles are stored per tenant, allowing fully branded invoices.
+  </Card>
+  <Card title="Payment state machines" icon="diagram-project">
+    Custom payment state machine XML can be loaded per tenant per plugin, enabling tenant-specific retry logic.
+  </Card>
+  <Card title="Plugin configuration" icon="plug">
+    Each plugin can receive a different configuration block (API keys, endpoints, feature flags) per tenant.
+  </Card>
+  <Card title="System properties" icon="sliders">
+    Kill Bill system properties can be overridden per tenant, tuning behavior such as invoice grouping or tax inclusion.
+  </Card>
+</CardGroup>
+
+## Creating a tenant
+
+Tenant creation requires admin HTTP Basic Auth credentials. You provide an `apiKey` and `apiSecret` that all subsequent tenant-scoped requests will use.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-CreatedBy: setup" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "apiKey": "bob",
+    "apiSecret": "lazar"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/tenants"
+```
+
+A successful response returns `HTTP 201 Created` with a `Location` header pointing to the new tenant resource.
+
+```json
+{
+  "tenantId": "a28318a4-1b21-4eb6-8c6f-0c7b09523bcb",
+  "apiKey": "bob",
+  "externalKey": null
+}
+```
+
+<Note>
+  The `apiSecret` is stored as a salted hash and is not returned after creation. Store it securely—it cannot be recovered from the API.
+</Note>
+
+You can also look up a tenant by its API key:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tenants?apiKey=bob"
+```
+
+## Authenticating as a tenant
+
+Every request that operates on tenant-scoped resources must include two additional headers alongside the admin Basic Auth credentials:
+
+| Header | Description |
+|--------|-------------|
+| `X-Killbill-ApiKey` | The `apiKey` provided at tenant creation |
+| `X-Killbill-ApiSecret` | The `apiSecret` provided at tenant creation |
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/accounts"
+```
+
+Kill Bill resolves the tenant from these headers on every request and applies the correct catalog, configuration, and plugin settings automatically.
+
+## Per-tenant system configuration
+
+You can override Kill Bill system properties for a specific tenant. The value is a Java properties-format string.
+
+<Steps>
+  <Step title="Upload per-tenant system properties">
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "X-Killbill-CreatedBy: admin" \
+      -H "Content-Type: text/plain" \
+      -X POST \
+      -d 'org.killbill.invoice.maxNumberOfMonthsInFuture=36
+    org.killbill.payment.retry.days=1,3,8' \
+      "http://127.0.0.1:8080/1.0/kb/tenants/uploadPerTenantConfig"
+    ```
+  </Step>
+  <Step title="Retrieve current per-tenant configuration">
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      "http://127.0.0.1:8080/1.0/kb/tenants/uploadPerTenantConfig"
+    ```
+  </Step>
+  <Step title="Delete per-tenant configuration">
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "X-Killbill-CreatedBy: admin" \
+      -X DELETE \
+      "http://127.0.0.1:8080/1.0/kb/tenants/uploadPerTenantConfig"
+    ```
+  </Step>
+</Steps>
+
+## Plugin configuration per tenant
+
+Each plugin installed on the Kill Bill node can receive a different configuration block per tenant. The body is an opaque string—typically Java properties or a JSON object—that the plugin reads at runtime.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  -d 'org.killbill.billing.plugin.stripe.apiKey=sk_live_tenant_bob
+org.killbill.billing.plugin.stripe.webhookSecret=whsec_tenant_bob' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadPluginConfig/killbill-stripe"
+```
+
+Retrieve the active configuration for a plugin:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadPluginConfig/killbill-stripe"
+```
+
+Delete it when no longer needed:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadPluginConfig/killbill-stripe"
+```
+
+## Payment state machine per tenant
+
+For advanced payment workflows, you can override the default payment state machine XML on a per-plugin, per-tenant basis:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  --data-binary @custom-state-machine.xml \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadPluginPaymentStateMachineConfig/killbill-stripe"
+```
+
+## Notification callbacks (webhooks)
+
+Kill Bill can push event notifications to an HTTP endpoint of your choice. Register a callback URL for the current tenant:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/tenants/registerNotificationCallback?cb=https://app.example.com/killbill/webhook"
+```
+
+Retrieve the registered callback:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/registerNotificationCallback"
+```
+
+Delete the callback:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/registerNotificationCallback"
+```
+
+<Tip>
+  Kill Bill delivers a JSON payload for each billing event (e.g., `INVOICE_CREATION`, `PAYMENT_SUCCESS`, `SUBSCRIPTION_CANCEL`). Your endpoint should respond with `HTTP 200` within a configurable timeout, or Kill Bill will retry.
+</Tip>
+
+## Tenant key-value store
+
+The tenant API exposes a general-purpose key-value store that your application can use to store arbitrary per-tenant configuration values. Keys are arbitrary strings; values are plain text.
+
+**Write a key:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -H "Content-Type: text/plain" \
+  -X POST \
+  -d 'https://cdn.example.com/invoices/logo.png' \
+  "http://127.0.0.1:8080/1.0/kb/tenants/userKeyValue/invoice-logo-url"
+```
+
+**Read a key:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/userKeyValue/invoice-logo-url"
+```
+
+The response contains a `TenantKeyValue` object:
+
+```json
+{
+  "key": "invoice-logo-url",
+  "values": ["https://cdn.example.com/invoices/logo.png"]
+}
+```
+
+**Search keys by prefix:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tenants/uploadPerTenantConfig/invoice/search"
+```
+
+**Delete a key:**
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: admin" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tenants/userKeyValue/invoice-logo-url"
+```
+
+## Catalog and overdue config scoping
+
+Catalog XML and overdue configuration XML are uploaded through the catalog and overdue APIs respectively, not through the tenant API directly. However, because every API call carries tenant headers, the uploaded configuration is automatically scoped to the calling tenant.
+
+<Warning>
+  Uploading a catalog or overdue config without tenant headers will modify the global (default) configuration, which is shared by tenants that have not uploaded their own. This is typically only desirable during initial platform setup.
+</Warning>
+
+Changes to one tenant's catalog or overdue config take effect immediately and do not require a server restart. Kill Bill invalidates the internal tenant cache and reloads configuration on the next request.

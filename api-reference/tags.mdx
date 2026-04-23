@@ -1,0 +1,342 @@
+---
+title: "Tags API — labeling and controlling entities"
+description: "Apply system control tags and user-defined labels to Kill Bill entities. Use tags to control billing behavior or organize accounts, invoices, and payments."
+---
+
+Tags let you attach labels to any Kill Bill entity. Some tags change how Kill Bill processes an object — these are called control tags. Others are free-form labels you define yourself and use to organize or filter objects in your own workflows. Both tag types are first-class citizens in the audit trail.
+
+## Tag types
+
+### System control tags
+
+Control tags are built into Kill Bill and carry predefined meaning. Applying one to an account or subscription changes the platform's behavior for that object immediately.
+
+| Tag name | UUID | Effect |
+|---|---|---|
+| `AUTO_PAY_OFF` | `00000000-0000-0000-0000-000000000001` | Suspends automatic payment on invoices for the account |
+| `AUTO_INVOICING_OFF` | `00000000-0000-0000-0000-000000000002` | Suspends automatic invoice generation for the account |
+| `OVERDUE_ENFORCEMENT_OFF` | `00000000-0000-0000-0000-000000000003` | Disables overdue state transitions for the account |
+| `WRITTEN_OFF` | `00000000-0000-0000-0000-000000000004` | Marks the account balance as written off |
+| `MANUAL_PAY` | `00000000-0000-0000-0000-000000000005` | Marks the account as paying manually (bypasses auto-pay) |
+| `TEST` | `00000000-0000-0000-0000-000000000006` | Marks the account as a test account |
+| `PARTNER` | `00000000-0000-0000-0000-000000000007` | Marks the account as a partner account |
+| `AUTO_INVOICING_DRAFT` | `00000000-0000-0000-0000-000000000008` | Invoices are created in `DRAFT` state instead of `COMMITTED` |
+| `AUTO_INVOICING_REUSE_DRAFT` | `00000000-0000-0000-0000-000000000009` | Reuses an existing draft invoice rather than creating a new one |
+
+<Note>
+The UUIDs for control tags are fixed across all Kill Bill deployments. You can use them directly in API requests without looking them up.
+</Note>
+
+### User-defined tags
+
+User-defined tags are custom labels you create through the tag definitions API. They have a name, description, and a set of applicable object types. Once created, you can apply them to any matching entity. User-defined tags do not change Kill Bill's processing behavior.
+
+## Tag definitions
+
+### List all tag definitions
+
+Returns all tag definitions for the current tenant, including the built-in control tag definitions.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tagDefinitions"
+```
+
+**Response**
+
+```json
+[
+  {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "isControlTag": true,
+    "name": "AUTO_PAY_OFF",
+    "description": "Suspends payments until removed.",
+    "applicableObjectTypes": ["ACCOUNT"],
+    "auditLogs": []
+  },
+  {
+    "id": "50131419-ee4a-4b2d-9d5c-e35f5fb9ba64",
+    "isControlTag": false,
+    "name": "vip",
+    "description": "High-value customer requiring priority support",
+    "applicableObjectTypes": ["ACCOUNT"],
+    "auditLogs": []
+  }
+]
+```
+
+<Expandable title="Response fields">
+  <ResponseField name="id" type="string">
+    UUID of the tag definition. Fixed UUIDs for control tags; auto-generated for user-defined tags.
+  </ResponseField>
+  <ResponseField name="isControlTag" type="boolean">
+    `true` for built-in system tags that affect Kill Bill behavior; `false` for user-defined labels.
+  </ResponseField>
+  <ResponseField name="name" type="string">
+    Tag name. Must be unique within the tenant.
+  </ResponseField>
+  <ResponseField name="description" type="string">
+    Human-readable description of the tag's purpose.
+  </ResponseField>
+  <ResponseField name="applicableObjectTypes" type="array">
+    Object types this tag can be applied to. Valid values: `ACCOUNT`, `ACCOUNT_EMAIL`, `BLOCKING_STATES`, `BUNDLE`, `CUSTOM_FIELD`, `INVOICE`, `INVOICE_ITEM`, `INVOICE_PAYMENT`, `PAYMENT`, `PAYMENT_ATTEMPT`, `PAYMENT_METHOD`, `SUBSCRIPTION`, `SUBSCRIPTION_EVENT`, `TRANSACTION`.
+  </ResponseField>
+  <ResponseField name="auditLogs" type="array">
+    Audit records for this definition. Populated when `audit=MINIMAL` or `audit=FULL` is specified.
+  </ResponseField>
+</Expandable>
+
+### Retrieve a tag definition
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tagDefinitions/50131419-ee4a-4b2d-9d5c-e35f5fb9ba64"
+```
+
+### Create a tag definition
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/tagDefinitions" \
+  -d '{
+    "name": "vip",
+    "description": "High-value customer requiring priority support",
+    "applicableObjectTypes": ["ACCOUNT"]
+  }'
+```
+
+Both `name` and `description` are required. `applicableObjectTypes` must contain at least one valid object type.
+
+A successful response returns `201 Created` with a `Location` header pointing to the new definition.
+
+### Delete a tag definition
+
+<Warning>
+You cannot delete a tag definition that is currently applied to any object. Remove all uses of the tag first.
+</Warning>
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/tagDefinitions/50131419-ee4a-4b2d-9d5c-e35f5fb9ba64"
+```
+
+Returns `204 No Content` on success.
+
+---
+
+## Tags on entities
+
+Every major Kill Bill entity type exposes `GET`, `POST`, and `DELETE` sub-resources for managing tags. The patterns are identical across entity types; the examples below use accounts.
+
+### Add tags to an account
+
+The request body is a JSON array of tag definition UUIDs. You can apply multiple tags in one call.
+
+<Tabs>
+  <Tab title="Control tag (AUTO_PAY_OFF)">
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags" \
+      -d '["00000000-0000-0000-0000-000000000001"]'
+    ```
+  </Tab>
+  <Tab title="User-defined tag">
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags" \
+      -d '["50131419-ee4a-4b2d-9d5c-e35f5fb9ba64"]'
+    ```
+  </Tab>
+  <Tab title="Multiple tags">
+    ```bash
+    curl -v \
+      -u admin:password \
+      -H "X-Killbill-ApiKey: bob" \
+      -H "X-Killbill-ApiSecret: lazar" \
+      -H "Content-Type: application/json" \
+      -H "X-Killbill-CreatedBy: demo" \
+      -X POST \
+      "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags" \
+      -d '[
+        "00000000-0000-0000-0000-000000000001",
+        "50131419-ee4a-4b2d-9d5c-e35f5fb9ba64"
+      ]'
+    ```
+  </Tab>
+</Tabs>
+
+Returns `201 Created` with a `Location` header.
+
+### List tags on an account
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags"
+```
+
+**Response**
+
+```json
+[
+  {
+    "tagId": "a3b5f2d1-0c4e-4f8a-9b3e-7d6c5e4f3a2b",
+    "objectType": "ACCOUNT",
+    "objectId": "2ad52f53-85ae-408a-9879-32a7e59dd03d",
+    "tagDefinitionId": "00000000-0000-0000-0000-000000000001",
+    "tagDefinitionName": "AUTO_PAY_OFF",
+    "auditLogs": []
+  }
+]
+```
+
+<Expandable title="Tag response fields">
+  <ResponseField name="tagId" type="string">
+    UUID of the tag instance (unique per object+definition combination).
+  </ResponseField>
+  <ResponseField name="objectType" type="string">
+    The type of object this tag is attached to.
+  </ResponseField>
+  <ResponseField name="objectId" type="string">
+    UUID of the tagged object.
+  </ResponseField>
+  <ResponseField name="tagDefinitionId" type="string">
+    UUID of the tag definition.
+  </ResponseField>
+  <ResponseField name="tagDefinitionName" type="string">
+    Name of the tag definition.
+  </ResponseField>
+  <ResponseField name="auditLogs" type="array">
+    Audit records. Populated when `audit=MINIMAL` or `audit=FULL` is specified.
+  </ResponseField>
+</Expandable>
+
+### Remove tags from an account
+
+Pass the tag definition UUIDs you want to remove as the `tagDef` query parameter. You can pass multiple values.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags?tagDef=00000000-0000-0000-0000-000000000001"
+```
+
+Returns `204 No Content` on success.
+
+### Supported entity endpoints
+
+The same `GET`, `POST`, and `DELETE` pattern is available on these entity paths:
+
+| Entity | Base path |
+|---|---|
+| Account | `/1.0/kb/accounts/{accountId}/tags` |
+| Bundle | `/1.0/kb/bundles/{bundleId}/tags` |
+| Subscription | `/1.0/kb/subscriptions/{subscriptionId}/tags` |
+| Invoice | `/1.0/kb/invoices/{invoiceId}/tags` |
+| Payment | `/1.0/kb/payments/{paymentId}/tags` |
+| Payment method | `/1.0/kb/paymentMethods/{paymentMethodId}/tags` |
+| Transaction | `/1.0/kb/invoicePayments/{invoicePaymentId}/tags` |
+
+---
+
+## Global tag listing and search
+
+### List all tags (paginated)
+
+Returns every tag applied to any object in the tenant.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tags/pagination?offset=0&limit=100"
+```
+
+<Tip>
+Filter by object type using the `objectType` query parameter — for example, `?objectType=ACCOUNT` — to narrow results to a specific entity type.
+</Tip>
+
+### Search tags
+
+Searches tag definitions by name. The search key is matched against the `tagDefinitionName` field.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tags/search/vip?offset=0&limit=100"
+```
+
+### Retrieve tag audit history
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/tags/a3b5f2d1-0c4e-4f8a-9b3e-7d6c5e4f3a2b/auditLogsWithHistory"
+```
+
+Returns the full change history for the tag instance, including who applied and removed it.
+
+---
+
+## Common patterns
+
+### Suspend automatic invoicing and payment together
+
+```bash
+# Disable auto-invoicing
+curl -v -u admin:password \
+  -H "X-Killbill-ApiKey: bob" -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags" \
+  -d '["00000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-000000000001"]'
+```
+
+### Check whether an account has AUTO_PAY_OFF
+
+```bash
+curl -u admin:password \
+  -H "X-Killbill-ApiKey: bob" -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/tags" \
+  | jq '.[] | select(.tagDefinitionName == "AUTO_PAY_OFF")'
+```

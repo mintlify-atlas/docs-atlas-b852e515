@@ -1,0 +1,260 @@
+---
+title: "Usage-based billing and metered subscriptions"
+description: "Record per-subscription consumption events and let Kill Bill aggregate and invoice them automatically at the end of each billing period."
+---
+
+Usage-based billing lets you charge customers for what they actually consume rather than a fixed recurring fee. Kill Bill handles the full lifecycle: you push usage records via the API, the invoice engine aggregates them at the close of each billing period, and the resulting invoice contains one line item per usage unit type defined in your catalog. This model supports cloud infrastructure, API call metering, data storage, or any other consumption-driven pricing.
+
+## How usage billing works
+
+<Steps>
+  <Step title="Define units in your catalog">
+    Declare the unit types your plans will meter (e.g., `gallons`, `api-calls`, `gb-stored`) inside the `<units>` section of your catalog XML. Each plan phase that should be billed on consumption declares a `<usage>` block with a `billingMode` of `IN_ARREAR`.
+  </Step>
+  <Step title="Record usage events">
+    Your application calls `POST /1.0/kb/usages` throughout the billing period whenever consumption occurs. Each record associates a quantity with a unit type and a timestamp.
+  </Step>
+  <Step title="Invoice generator aggregates consumption">
+    At the end of the billing period Kill Bill aggregates all records for the subscription, applies the tiered pricing blocks defined in the catalog, and produces invoice line items with the total amount due.
+  </Step>
+  <Step title="Payment is collected">
+    The invoice is processed through the normal Kill Bill payment flow—no additional steps are required compared to a fixed recurring subscription.
+  </Step>
+</Steps>
+
+## Defining usage units in the catalog
+
+The SpyCarAdvanced sample catalog ships with a `Gas` add-on product that demonstrates consumable usage billing. The relevant sections of the catalog XML are:
+
+```xml
+<!-- Declare the unit types available across all plans -->
+<units>
+  <unit name="gallons"/>
+</units>
+```
+
+The `gas-monthly` plan then references that unit inside a `<usage>` block on its evergreen phase:
+
+```xml
+<plan name="gas-monthly">
+  <product>Gas</product>
+  <finalPhase type="EVERGREEN">
+    <duration>
+      <unit>UNLIMITED</unit>
+    </duration>
+    <usages>
+      <usage name="gas-monthly-in-arrear" billingMode="IN_ARREAR" usageType="CONSUMABLE">
+        <billingPeriod>MONTHLY</billingPeriod>
+        <tiers>
+          <tier>
+            <blocks>
+              <tieredBlock>
+                <unit>gallons</unit>
+                <size>1</size>
+                <prices>
+                  <price>
+                    <currency>USD</currency>
+                    <value>3.95</value>
+                  </price>
+                  <price>
+                    <currency>GBP</currency>
+                    <value>1.95</value>
+                  </price>
+                  <price>
+                    <currency>EUR</currency>
+                    <value>2.95</value>
+                  </price>
+                </prices>
+                <max>100</max>
+              </tieredBlock>
+            </blocks>
+          </tier>
+        </tiers>
+      </usage>
+    </usages>
+  </finalPhase>
+</plan>
+```
+
+Key attributes:
+
+| Attribute | Value | Meaning |
+|-----------|-------|---------|
+| `billingMode` | `IN_ARREAR` | Usage is billed at the end of the period |
+| `usageType` | `CONSUMABLE` | Each unit consumed is added to the total |
+| `billingPeriod` | `MONTHLY` | Aggregation window is one calendar month |
+| `size` | `1` | Each block covers 1 gallon |
+| `max` | `100` | This tier applies up to 100 gallons |
+
+## Usage types
+
+<AccordionGroup>
+  <Accordion title="CONSUMABLE">
+    Each record adds to a running total for the billing period. The invoice is calculated by summing all recorded quantities and applying the tiered pricing blocks. Use this for metered resources where higher consumption means higher cost (API calls, data transfer, gallons of gas).
+  </Accordion>
+  <Accordion title="CAPACITY">
+    The highest recorded value within the billing period is used as the billable quantity rather than the sum. Use this for resources where you charge based on peak allocation (maximum concurrent connections, maximum storage provisioned).
+  </Accordion>
+</AccordionGroup>
+
+## Recording usage
+
+Send a `POST /1.0/kb/usages` request with a `SubscriptionUsageRecord` body. You must include:
+
+- `subscriptionId` — the UUID of the active subscription
+- `unitUsageRecords` — one entry per unit type, each containing one or more timestamped amount records
+- `trackingId` (optional) — a client-supplied idempotency key to prevent duplicate records
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "subscriptionId": "e7fb6230-d9e2-4b52-9e18-47d2f39a30b6",
+    "trackingId": "fill-2024-06-15-001",
+    "unitUsageRecords": [
+      {
+        "unitType": "gallons",
+        "usageRecords": [
+          {
+            "recordDate": "2024-06-15T10:00:00.000Z",
+            "amount": 12
+          },
+          {
+            "recordDate": "2024-06-20T14:30:00.000Z",
+            "amount": 8
+          }
+        ]
+      }
+    ]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/usages"
+```
+
+A successful response returns `HTTP 201 Created`.
+
+<Warning>
+  Kill Bill validates that the subscription exists and is active. If the `recordDate` on any record is after the subscription's effective end date, the API returns `HTTP 400 Bad Request`. Ensure usage is recorded before or on the cancellation date.
+</Warning>
+
+### Recording multiple unit types in one call
+
+If a subscription has a plan with multiple metered unit types, you can record all of them in a single request:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "subscriptionId": "e7fb6230-d9e2-4b52-9e18-47d2f39a30b6",
+    "trackingId": "daily-rollup-2024-06-15",
+    "unitUsageRecords": [
+      {
+        "unitType": "api-calls",
+        "usageRecords": [
+          { "recordDate": "2024-06-15T00:00:00.000Z", "amount": 4500 }
+        ]
+      },
+      {
+        "unitType": "gb-stored",
+        "usageRecords": [
+          { "recordDate": "2024-06-15T00:00:00.000Z", "amount": 250 }
+        ]
+      }
+    ]
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/usages"
+```
+
+## Retrieving usage
+
+### All unit types for a subscription
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/usages/e7fb6230-d9e2-4b52-9e18-47d2f39a30b6?startDate=2024-06-01&endDate=2024-07-01"
+```
+
+### A specific unit type
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/usages/e7fb6230-d9e2-4b52-9e18-47d2f39a30b6/gallons?startDate=2024-06-01&endDate=2024-07-01"
+```
+
+Both endpoints require `startDate` and `endDate` query parameters in ISO 8601 format and return a `RolledUpUsage` object:
+
+```json
+{
+  "subscriptionId": "e7fb6230-d9e2-4b52-9e18-47d2f39a30b6",
+  "startDate": "2024-06-01T00:00:00.000Z",
+  "endDate": "2024-07-01T00:00:00.000Z",
+  "rolledUpUnits": [
+    {
+      "unitType": "gallons",
+      "amount": 20
+    }
+  ]
+}
+```
+
+The `amount` is the aggregate for the requested date range across all individual records.
+
+## Tiered pricing blocks
+
+Kill Bill supports multi-tier pricing for usage. Each `<tier>` in the catalog applies to a quantity range. The `<max>` attribute on a `<tieredBlock>` sets the upper bound for that tier; omit `<max>` (or set it to `-1`) to indicate that the tier has no upper limit.
+
+```xml
+<tiers>
+  <!-- Tier 1: first 100 gallons at $3.95 each -->
+  <tier>
+    <blocks>
+      <tieredBlock>
+        <unit>gallons</unit>
+        <size>1</size>
+        <prices>
+          <price><currency>USD</currency><value>3.95</value></price>
+        </prices>
+        <max>100</max>
+      </tieredBlock>
+    </blocks>
+  </tier>
+  <!-- Tier 2: gallons 101+ at $2.95 each (no upper limit) -->
+  <tier>
+    <blocks>
+      <tieredBlock>
+        <unit>gallons</unit>
+        <size>1</size>
+        <prices>
+          <price><currency>USD</currency><value>2.95</value></price>
+        </prices>
+        <max>-1</max>
+      </tieredBlock>
+    </blocks>
+  </tier>
+</tiers>
+```
+
+## Billing period alignment
+
+<Info>
+  Usage billing is always `IN_ARREAR`. Kill Bill does not support `IN_ADVANCE` billing mode for usage phases. Aggregation always covers the closed billing period that just ended.
+</Info>
+
+The usage billing period aligns with the subscription's recurring billing period. For a monthly subscription that started on June 5th, the first usage invoice is generated on July 5th and covers June 5th–July 4th. Usage records submitted outside the current open billing window are ignored during invoice generation for that window.
+
+If a subscription is cancelled before the end of its billing period, Kill Bill generates a final usage invoice for the partial period up to the cancellation date.

@@ -1,0 +1,311 @@
+---
+title: "Processing payments with Kill Bill"
+description: "Understand Kill Bill's plugin-based payment architecture, transaction types, payment state machine, payment methods, retry logic, and chargeback handling."
+---
+
+Kill Bill delegates all payment gateway communication to **payment plugins** — separate deployable components that implement the Kill Bill payment plugin API. This architecture means Kill Bill itself never stores card numbers or gateway credentials; instead it orchestrates the payment lifecycle and leaves gateway-specific details to the plugin. You can run multiple plugins simultaneously (e.g., Stripe for cards, PayPal for wallets) and route payments between them using payment control plugins.
+
+## Plugin-based payment architecture
+
+<CardGroup cols={2}>
+  <Card title="Payment plugin" icon="plug">
+    Communicates with the payment gateway. Implements authorize, capture, purchase, void, refund, and chargeback operations. Examples: `killbill-stripe`, `killbill-braintree`, `killbill-adyen`.
+  </Card>
+  <Card title="Payment control plugin" icon="sliders">
+    Intercepts payment calls before and after gateway communication. Used for invoice payment routing, retry scheduling, fraud rules, and 3DS orchestration.
+  </Card>
+</CardGroup>
+
+## Transaction types
+
+Each payment in Kill Bill is composed of one or more **transactions**. The supported transaction types map directly to standard payment gateway operations:
+
+| Type | Description |
+|---|---|
+| `AUTHORIZE` | Reserve funds without capturing; requires a subsequent `CAPTURE` |
+| `CAPTURE` | Capture a previously authorized amount (partial or full) |
+| `PURCHASE` | Combined authorize + capture in a single call |
+| `VOID` | Cancel an open authorization before capture |
+| `REFUND` | Return funds for a previously captured or purchased transaction |
+| `CHARGEBACK` | Record a customer-initiated dispute (bank-side reversal) |
+| `CREDIT` | Push funds to the customer's payment method |
+
+## Payment state machine
+
+Every Kill Bill payment transitions through a state machine. A payment starts in `INIT` and reaches a terminal state based on the gateway response:
+
+```
+INIT → PENDING   (async gateway; awaiting callback)
+     → SUCCESS   (gateway approved)
+     → FAILURE   (gateway declined)
+     → UNKNOWN   (no response received from gateway)
+```
+
+`PENDING` and `UNKNOWN` payments can be completed later using the complete-transaction endpoint (`PUT /1.0/kb/payments/{paymentId}`). Kill Bill's retry logic operates on `FAILURE` and `UNKNOWN` states.
+
+## Managing payment methods
+
+### Add a payment method
+
+`POST /1.0/kb/accounts/{accountId}/paymentMethods` registers a new payment method for an account. The `pluginName` identifies which payment plugin stores and processes the method. The `pluginInfo` block contains plugin-specific tokenization details (e.g., a Stripe `paymentMethodId`).
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "pluginName": "killbill-stripe",
+    "isDefault": true,
+    "pluginInfo": {
+      "properties": [
+        {
+          "key": "paymentMethodId",
+          "value": "pm_1OqMb02eZvKYlo2CcV7yFrCb"
+        }
+      ]
+    }
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods"
+```
+
+<Tip>
+Set `isDefault=true` on the payment method you want Kill Bill to use for automatic invoice payments. Only one payment method per account can be the default at a time.
+</Tip>
+
+### Retrieve payment methods for an account
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods"
+```
+
+### Set the default payment method
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X PUT \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/paymentMethods/c3d4e5f6-1234-5678-abcd-000000000001/setDefault"
+```
+
+## Automatic invoice payment
+
+When Kill Bill generates a new committed invoice, it automatically triggers a `PURCHASE` transaction against the account's default payment method unless the account has the `AUTO_PAY_OFF` control tag set. The full flow is:
+
+<Steps>
+  <Step title="Invoice committed">
+    Kill Bill persists the invoice with status `COMMITTED`.
+  </Step>
+  <Step title="Payment triggered">
+    The invoice payment control plugin routes the payment to the appropriate payment plugin.
+  </Step>
+  <Step title="Gateway response">
+    On success the invoice is marked `PAID`. On failure the invoice remains `UNPAID` and the retry scheduler is notified.
+  </Step>
+</Steps>
+
+## Triggering a manual payment
+
+`POST /1.0/kb/accounts/{accountId}/payments` triggers a payment outside the automatic invoice flow. You can use this to charge a specific amount, authorize a card, or push a credit.
+
+```bash
+# PURCHASE — charge immediately
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "transactionType": "PURCHASE",
+    "amount": 49.99,
+    "currency": "USD"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/payments"
+```
+
+```bash
+# AUTHORIZE — reserve funds
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "transactionType": "AUTHORIZE",
+    "amount": 100.00,
+    "currency": "USD"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/payments"
+```
+
+### Capture a prior authorization
+
+`POST /1.0/kb/payments/{paymentId}` captures funds against an existing authorization:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "amount": 100.00,
+    "currency": "USD"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/payments/d5e6f7a8-0000-1111-2222-333344445555/"
+```
+
+### Issue a refund
+
+`POST /1.0/kb/payments/{paymentId}/refunds` creates a `REFUND` transaction:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "amount": 49.99,
+    "currency": "USD"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/payments/d5e6f7a8-0000-1111-2222-333344445555/refunds"
+```
+
+## Retry logic
+
+When a payment fails, Kill Bill schedules automatic retries according to a retry schedule configured in the invoice payment control plugin. The default schedule retries at day 8, day 15, and day 22 after the first failure, but this is fully configurable.
+
+<Info>
+Retry behavior is controlled by the `invoicePaymentControlPluginApi` (the built-in invoice payment control plugin). You can replace or augment this with a custom control plugin to implement your own dunning schedule. See the [overdue guide](/guides/overdue) for state-based dunning on top of payment retries.
+</Info>
+
+On each retry attempt:
+
+1. Kill Bill fires a new `PURCHASE` transaction.
+2. If the transaction succeeds, the invoice is marked `PAID`.
+3. If all retries are exhausted, the invoice remains `UNPAID` and the overdue engine may escalate the account state.
+
+## Chargeback handling
+
+A chargeback is a bank-initiated reversal of a previously settled payment. Kill Bill records chargebacks as `CHARGEBACK` transactions.
+
+```bash
+# Record a chargeback for a specific payment
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "amount": 49.99,
+    "currency": "USD"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/payments/d5e6f7a8-0000-1111-2222-333344445555/chargebacks"
+```
+
+If the chargeback is subsequently reversed (won dispute), record a chargeback reversal:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "amount": 49.99,
+    "currency": "USD"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/payments/d5e6f7a8-0000-1111-2222-333344445555/chargebackReversals"
+```
+
+<Note>
+Recording a chargeback in Kill Bill updates the invoice balance and the account's credit balance but does not automatically communicate with the payment gateway. For webhook-based automation, configure a payment plugin to receive gateway chargeback notifications and call the Kill Bill API.
+</Note>
+
+## Hosted Payment Pages (HPP)
+
+For card-not-present scenarios where you need PCI-compliant card collection, Kill Bill supports Hosted Payment Pages through compatible plugins (e.g., `killbill-adyen`, `killbill-stripe`). The general flow is:
+
+<Steps>
+  <Step title="Request HPP form fields">
+    Call `POST /1.0/kb/paymentGateways/hosted/form/{accountId}` to retrieve the redirect URL or form fields from the plugin.
+  </Step>
+  <Step title="Redirect the customer">
+    Send the customer to the gateway's hosted page where they enter card details.
+  </Step>
+  <Step title="Handle the callback">
+    The gateway redirects back to your return URL. Call `POST /1.0/kb/paymentGateways/hosted/notification/{pluginName}` to process the gateway notification and tokenize the payment method.
+  </Step>
+</Steps>
+
+## Retrieving payment details
+
+```bash
+# Get a payment by ID (with transaction history)
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/payments/d5e6f7a8-0000-1111-2222-333344445555/?withAttempts=true"
+```
+
+```bash
+# Get all payments for an account
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/accounts/2ad52f53-85ae-408a-9879-32a7e59dd03d/payments"
+```
+
+## Endpoint summary
+
+<CardGroup cols={2}>
+  <Card title="POST /1.0/kb/accounts/{id}/paymentMethods" icon="credit-card">
+    Add a payment method to an account.
+  </Card>
+  <Card title="POST /1.0/kb/accounts/{id}/payments" icon="money-bill-transfer">
+    Trigger an AUTHORIZE, PURCHASE, or CREDIT transaction.
+  </Card>
+  <Card title="POST /1.0/kb/payments/{id}/" icon="arrow-right">
+    Capture an existing authorization.
+  </Card>
+  <Card title="POST /1.0/kb/payments/{id}/refunds" icon="rotate-left">
+    Issue a refund against a settled payment.
+  </Card>
+  <Card title="POST /1.0/kb/payments/{id}/chargebacks" icon="triangle-exclamation">
+    Record a chargeback dispute.
+  </Card>
+  <Card title="POST /1.0/kb/payments/{id}/chargebackReversals" icon="circle-check">
+    Record a reversal of a won chargeback dispute.
+  </Card>
+  <Card title="PUT /1.0/kb/payments/{id}" icon="arrows-rotate">
+    Complete a PENDING or UNKNOWN transaction.
+  </Card>
+  <Card title="GET /1.0/kb/payments/{id}/" icon="magnifying-glass">
+    Retrieve payment details and transaction history.
+  </Card>
+</CardGroup>

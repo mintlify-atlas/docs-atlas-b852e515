@@ -1,0 +1,366 @@
+---
+title: "Modeling products and pricing with Kill Bill catalogs"
+description: "Learn how to define products, plans, phases, and price lists in a Kill Bill catalog XML, and upload them via the API or the Simple Plan endpoint."
+---
+
+The Kill Bill catalog is the central configuration artifact that describes what you sell, at what price, and under what conditions. Every subscription in Kill Bill is anchored to a plan defined in the catalog, which means changes to your pricing or product structure are expressed as new catalog versions rather than ad-hoc data edits. This separation keeps billing logic reproducible and auditable.
+
+## Catalog structure
+
+A catalog XML file contains the following top-level sections:
+
+| Section | Purpose |
+|---|---|
+| `effectiveDate` | When this catalog version becomes active |
+| `catalogName` | Human-readable identifier |
+| `recurringBillingMode` | `IN_ADVANCE` or `IN_ARREAR` |
+| `currencies` | Supported currencies |
+| `units` | Usage units (e.g., `gallons`, `seats`) |
+| `products` | Named products with `BASE` or `ADD_ON` category |
+| `rules` | Change, cancel, and alignment policies |
+| `plans` | Concrete billing plans tied to products |
+| `priceLists` | Named groupings of plans (default and child) |
+
+### Products
+
+Products are the top-level entities customers subscribe to. Each product has a `category` of either `BASE` or `ADD_ON`. A `BASE` product can declare which add-ons are `available` (customer must add separately) or `included` (automatically provisioned).
+
+```xml
+<products>
+    <product name="Standard">
+        <category>BASE</category>
+    </product>
+    <product name="Sports">
+        <category>BASE</category>
+        <available>
+            <addonProduct>OilSlick</addonProduct>
+            <addonProduct>RemoteControl</addonProduct>
+            <addonProduct>Gas</addonProduct>
+        </available>
+    </product>
+    <product name="Super">
+        <category>BASE</category>
+        <included>
+            <addonProduct>OilSlick</addonProduct>
+        </included>
+        <available>
+            <addonProduct>RemoteControl</addonProduct>
+            <addonProduct>Gas</addonProduct>
+        </available>
+    </product>
+    <product name="OilSlick">
+        <category>ADD_ON</category>
+    </product>
+    <product name="Gas">
+        <category>ADD_ON</category>
+    </product>
+</products>
+```
+
+### Plans and phases
+
+A **plan** binds a product to a sequence of billing phases. Plans have zero or more `initialPhases` followed by exactly one `finalPhase`. Kill Bill transitions through phases automatically.
+
+<AccordionGroup>
+  <Accordion title="TRIAL phase — free period before billing starts">
+    A `TRIAL` phase uses a `fixed` price element. An empty `<fixedPrice>` block means $0.
+
+    ```xml
+    <initialPhases>
+        <phase type="TRIAL">
+            <duration>
+                <unit>DAYS</unit>
+                <number>30</number>
+            </duration>
+            <fixed>
+                <fixedPrice> <!-- empty price implies $0 -->
+                </fixedPrice>
+            </fixed>
+        </phase>
+    </initialPhases>
+    ```
+  </Accordion>
+
+  <Accordion title="DISCOUNT phase — reduced recurring price">
+    A `DISCOUNT` phase has a `recurring` element with a lower price and a finite duration.
+
+    ```xml
+    <phase type="DISCOUNT">
+        <duration>
+            <unit>MONTHS</unit>
+            <number>3</number>
+        </duration>
+        <recurring>
+            <billingPeriod>MONTHLY</billingPeriod>
+            <recurringPrice>
+                <price>
+                    <currency>USD</currency>
+                    <value>66.00</value>
+                </price>
+            </recurringPrice>
+        </recurring>
+    </phase>
+    ```
+  </Accordion>
+
+  <Accordion title="EVERGREEN phase — ongoing recurring billing">
+    The `EVERGREEN` phase uses `UNLIMITED` duration and runs until the subscription is cancelled.
+
+    ```xml
+    <finalPhase type="EVERGREEN">
+        <duration>
+            <unit>UNLIMITED</unit>
+        </duration>
+        <recurring>
+            <billingPeriod>MONTHLY</billingPeriod>
+            <recurringPrice>
+                <price>
+                    <currency>USD</currency>
+                    <value>100.00</value>
+                </price>
+                <price>
+                    <currency>GBP</currency>
+                    <value>75.00</value>
+                </price>
+                <price>
+                    <currency>EUR</currency>
+                    <value>85.00</value>
+                </price>
+            </recurringPrice>
+        </recurring>
+    </finalPhase>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+#### Billing periods
+
+The `<billingPeriod>` element inside a `recurring` section controls how often the customer is charged. Supported values include:
+
+- `DAILY`
+- `WEEKLY`
+- `BIWEEKLY`
+- `THIRTY_DAYS`
+- `MONTHLY`
+- `QUARTERLY`
+- `BIANNUAL`
+- `ANNUAL`
+- `BIENNIAL`
+- `NO_BILLING_PERIOD` (one-time fixed charge)
+
+### Usage-based plans
+
+For metered billing, a plan phase can contain `usages` instead of (or in addition to) a `recurring` block. The `Gas` add-on in the SpyCarAdvanced catalog demonstrates consumable usage billed in arrear:
+
+```xml
+<plan name="gas-monthly">
+    <product>Gas</product>
+    <finalPhase type="EVERGREEN">
+        <duration>
+            <unit>UNLIMITED</unit>
+        </duration>
+        <usages>
+            <usage name="gas-monthly-in-arrear" billingMode="IN_ARREAR" usageType="CONSUMABLE">
+                <billingPeriod>MONTHLY</billingPeriod>
+                <tiers>
+                    <tier>
+                        <blocks>
+                            <tieredBlock>
+                                <unit>gallons</unit>
+                                <size>1</size>
+                                <prices>
+                                    <price>
+                                        <currency>USD</currency>
+                                        <value>3.95</value>
+                                    </price>
+                                </prices>
+                                <max>100</max>
+                            </tieredBlock>
+                        </blocks>
+                    </tier>
+                </tiers>
+            </usage>
+        </usages>
+    </finalPhase>
+</plan>
+```
+
+The `<units>` section at the top of the catalog must declare each unit name used in usages:
+
+```xml
+<units>
+    <unit name="gallons"/>
+</units>
+```
+
+### Price lists
+
+Plans are organized into **price lists**. The `DEFAULT` price list is mandatory. Additional `childPriceList` entries let you offer discounted or custom pricing to specific customer segments without duplicating products.
+
+```xml
+<priceLists>
+    <defaultPriceList name="DEFAULT">
+        <plans>
+            <plan>standard-annual</plan>
+            <plan>standard-monthly</plan>
+            <plan>sports-annual</plan>
+            <plan>sports-monthly</plan>
+            <plan>super-monthly</plan>
+        </plans>
+    </defaultPriceList>
+    <childPriceList name="SpecialDiscount">
+        <plans>
+            <plan>discount-standard-monthly</plan>
+            <plan>discount-sports-monthly</plan>
+            <plan>discount-super-monthly</plan>
+        </plans>
+    </childPriceList>
+</priceLists>
+```
+
+## Versioned catalogs
+
+Kill Bill supports multiple catalog versions. Each version has a distinct `effectiveDate`. When you upload a new catalog, Kill Bill appends it to the version history — existing subscriptions continue on their current plan and price until the system processes the new version.
+
+<Note>
+Existing subscriptions are not retroactively repriced when you upload a new catalog version. Price changes only apply to new subscriptions or at the next renewal if your plan change rules allow it.
+</Note>
+
+You can retrieve all effective dates to inspect the history:
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/versions"
+```
+
+## API endpoints
+
+### Upload a full catalog as XML
+
+`POST /1.0/kb/catalog/xml` — Upload a complete catalog XML file. Kill Bill validates the XML against its schema before persisting it.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/xml" \
+  -H "X-Killbill-CreatedBy: demo" \
+  --data-binary @SpyCarAdvanced.xml \
+  "http://127.0.0.1:8080/1.0/kb/catalog/xml"
+```
+
+### Validate a catalog without persisting
+
+`POST /1.0/kb/catalog/xml/validate` — Returns a validation report without storing the catalog.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/xml" \
+  -H "X-Killbill-CreatedBy: demo" \
+  --data-binary @catalog.xml \
+  "http://127.0.0.1:8080/1.0/kb/catalog/xml/validate"
+```
+
+### Add a plan with the Simple Plan API
+
+`POST /1.0/kb/catalog/simplePlan` — A convenience endpoint for adding a single plan without writing XML. Kill Bill creates or extends the catalog automatically.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Content-Type: application/json" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X POST \
+  --data-binary '{
+    "planId": "basic-monthly",
+    "productName": "Basic",
+    "productCategory": "BASE",
+    "currency": "USD",
+    "amount": 9.99,
+    "billingPeriod": "MONTHLY",
+    "trialLength": 14,
+    "trialTimeUnit": "DAYS"
+  }' \
+  "http://127.0.0.1:8080/1.0/kb/catalog/simplePlan"
+```
+
+<Info>
+The Simple Plan API is suitable for straightforward recurring plans. For multi-currency pricing, discount phases, usage billing, or complex rules, use the full catalog XML.
+</Info>
+
+### Retrieve the catalog as JSON
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "Accept: application/json" \
+  "http://127.0.0.1:8080/1.0/kb/catalog"
+```
+
+### List available base plans
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/availableBasePlans"
+```
+
+### List available add-ons for a base product
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  "http://127.0.0.1:8080/1.0/kb/catalog/availableAddons?baseProductName=Sports"
+```
+
+### Delete the tenant catalog
+
+`DELETE /1.0/kb/catalog` — Removes all per-tenant catalog versions, reverting to any system-level default.
+
+```bash
+curl -v \
+  -u admin:password \
+  -H "X-Killbill-ApiKey: bob" \
+  -H "X-Killbill-ApiSecret: lazar" \
+  -H "X-Killbill-CreatedBy: demo" \
+  -X DELETE \
+  "http://127.0.0.1:8080/1.0/kb/catalog"
+```
+
+## Endpoint summary
+
+<CardGroup cols={2}>
+  <Card title="GET /1.0/kb/catalog/xml" icon="file-code">
+    Retrieve the full catalog as XML, optionally filtered to a specific version by `requestedDate`.
+  </Card>
+  <Card title="POST /1.0/kb/catalog/xml" icon="arrow-up-from-bracket">
+    Upload a new catalog version from a raw XML body.
+  </Card>
+  <Card title="POST /1.0/kb/catalog/simplePlan" icon="circle-plus">
+    Add a simple plan to the current catalog version using a JSON body.
+  </Card>
+  <Card title="GET /1.0/kb/catalog/versions" icon="clock-rotate-left">
+    List all effective dates for which a catalog version exists.
+  </Card>
+  <Card title="GET /1.0/kb/catalog/availableBasePlans" icon="list">
+    List all available base plans in the current catalog.
+  </Card>
+  <Card title="GET /1.0/kb/catalog/availableAddons" icon="puzzle-piece">
+    List add-ons available for a given base product name.
+  </Card>
+</CardGroup>

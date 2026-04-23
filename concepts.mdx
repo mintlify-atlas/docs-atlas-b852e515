@@ -1,0 +1,242 @@
+---
+title: "Kill Bill core concepts"
+description: "Understand Kill Bill's data model — tenants, accounts, catalogs, subscriptions, invoices, and payments — and how they connect to each other."
+---
+
+Kill Bill models the full subscription billing lifecycle as a set of related entities. Each entity has a well-defined responsibility, and they interact through a persistent event bus: a subscription event triggers invoice generation, and a committed invoice triggers payment collection. Understanding these relationships before you start integrating will save you significant debugging time.
+
+## Entities
+
+<AccordionGroup>
+
+<Accordion title="Tenant" icon="building">
+
+A **tenant** is the top-level isolation boundary. Every Kill Bill deployment can serve multiple tenants simultaneously, each with its own:
+
+- Product catalog
+- Per-tenant configuration (system properties)
+- Plugin configuration
+- Accounts, subscriptions, invoices, and payments
+
+A tenant is identified by its `apiKey` and `apiSecret`, which are sent as HTTP headers on every request:
+
+```
+X-Killbill-ApiKey: bob
+X-Killbill-ApiSecret: lazar
+```
+
+You create a tenant once with `POST /1.0/kb/tenants`. Everything else you create — accounts, subscriptions, invoices — belongs to that tenant.
+
+<Note>
+  Kill Bill runs in multi-tenant mode by default (`org.killbill.server.multitenant=true`). Requests without valid tenant headers are rejected.
+</Note>
+
+</Accordion>
+
+<Accordion title="Account" icon="user">
+
+An **account** represents a customer. It is the root entity that owns subscriptions, invoices, and payments. Key fields include:
+
+| Field | Description |
+|-------|-------------|
+| `accountId` | UUID assigned by Kill Bill on creation. |
+| `externalKey` | Your own identifier for the customer (optional but recommended). |
+| `name` | Customer display name. |
+| `email` | Billing email for notifications. |
+| `currency` | ISO 4217 currency code (e.g., `USD`). All invoices for the account are in this currency. |
+| `timeZone` | IANA time zone (e.g., `UTC`). Determines when billing day boundaries fall. |
+| `billCycleDayLocal` | The day of the month on which recurring charges are aligned. |
+
+Accounts also hold credit balance (`accountCBA`) and current outstanding balance (`accountBalance`), which you can request by appending `?accountWithBalance=true` to `GET /1.0/kb/accounts/{accountId}`.
+
+</Accordion>
+
+<Accordion title="Catalog" icon="tag">
+
+The **catalog** is a versioned XML document that defines everything about your products and pricing. Kill Bill reads the catalog at runtime when processing subscription changes. A catalog contains:
+
+- **Products** — named offerings with a category (`BASE` or `ADD_ON`). Base products are standalone; add-on products attach to a base subscription in the same bundle.
+- **Plans** — named billing configurations for a product, composed of one or more phases.
+- **Phases** — time-bound pricing periods within a plan. Phase types are `TRIAL`, `DISCOUNT`, and `EVERGREEN`. Only one `EVERGREEN` phase is allowed and it must be the last.
+- **Price lists** — named groups of plans, used to model pricing tiers or customer segments (e.g., `DEFAULT`, `SpecialDiscount`).
+- **Rules** — policies for how plan changes, cancellations, and billing alignment behave (e.g., `END_OF_TERM`, `IMMEDIATE`).
+
+A catalog version becomes effective at its `<effectiveDate>`. You can upload new catalog versions with `POST /1.0/kb/catalog/xml` — existing subscriptions continue using the plan they were on.
+
+Example phase structure from the `SpyCarAdvanced` catalog:
+
+```xml
+<plan name="standard-monthly">
+  <product>Standard</product>
+  <initialPhases>
+    <phase type="TRIAL">
+      <duration><unit>DAYS</unit><number>30</number></duration>
+      <fixed><fixedPrice/></fixed>  <!-- $0 trial -->
+    </phase>
+  </initialPhases>
+  <finalPhase type="EVERGREEN">
+    <duration><unit>UNLIMITED</unit></duration>
+    <recurring>
+      <billingPeriod>MONTHLY</billingPeriod>
+      <recurringPrice>
+        <price><currency>USD</currency><value>100.00</value></price>
+      </recurringPrice>
+    </recurring>
+  </finalPhase>
+</plan>
+```
+
+</Accordion>
+
+<Accordion title="Plan and phase" icon="list">
+
+A **plan** is a specific billing configuration for a product. The name you use when creating a subscription (e.g., `standard-monthly`) is the plan name from the catalog.
+
+A **phase** is a time-bounded period within a plan that has its own pricing model:
+
+| Phase type | Typical use | Pricing model |
+|------------|-------------|---------------|
+| `TRIAL` | Free period before billing starts | Fixed price (usually $0) |
+| `DISCOUNT` | Promotional rate for new customers | Recurring at reduced rate |
+| `EVERGREEN` | Standard ongoing billing | Recurring or usage-based |
+
+Kill Bill automatically advances a subscription from one phase to the next based on the phase duration. When a phase transition occurs, Kill Bill publishes a `PHASE` subscription event, which triggers invoice generation for the new phase.
+
+</Accordion>
+
+<Accordion title="Bundle and subscription" icon="layer-group">
+
+A **bundle** is a container that groups a base subscription with its associated add-on subscriptions. Bundles have an `externalKey` (typically your internal customer-product identifier) and are created implicitly when you create the first subscription for an account on a given plan.
+
+A **subscription** tracks an account's enrollment in a specific plan over time. It records:
+
+- The current phase and plan
+- Entitlement start and end dates (when the customer has access)
+- Billing start and end dates (when charges begin and stop)
+- A sequence of `SubscriptionEvent` records representing every state transition
+
+A subscription can be in one of several states throughout its lifecycle:
+
+```
+PENDING → ACTIVE → CANCELLED
+                ↘ BLOCKED
+```
+
+When you change a subscription's plan, Kill Bill records a `CHANGE` event. Depending on the catalog's `<changePolicy>`, the change takes effect `IMMEDIATELY` or at `END_OF_TERM`.
+
+</Accordion>
+
+<Accordion title="Invoice" icon="file-invoice">
+
+An **invoice** is a billing document generated automatically when a subscription event occurs. It represents what a customer owes for a given billing period.
+
+Invoice items reflect the reason a charge appears:
+
+| Item type | Description |
+|-----------|-------------|
+| `RECURRING` | Charge for a recurring phase (e.g., $100/month for `EVERGREEN`). |
+| `FIXED` | One-time charge for a fixed phase (e.g., $0 trial). |
+| `USAGE` | Charge computed from recorded usage records. |
+| `REPAIR_ADJ` | Adjustment that cancels a previous item (e.g., on cancellation or plan change). |
+| `CBA_ADJ` | Credit balance adjustment applied to reduce the amount owed. |
+
+An invoice can be in state `DRAFT` (not yet committed), `COMMITTED` (final, ready for payment), or `VOID` (cancelled). Kill Bill moves invoices to `COMMITTED` automatically unless you have invoicing turned off for the account.
+
+</Accordion>
+
+<Accordion title="Payment and payment method" icon="credit-card">
+
+A **payment method** is a tokenized representation of a customer's payment instrument (credit card, bank account, etc.) stored in Kill Bill or in an external vault maintained by a payment plugin. Each account can have multiple payment methods, with one designated as the default.
+
+A **payment** represents a financial transaction against an invoice. Each payment has one or more **payment transactions** that record individual gateway calls:
+
+| Transaction type | Description |
+|-----------------|-------------|
+| `PURCHASE` | Direct charge against the payment method. |
+| `AUTHORIZE` | Reserve funds without capturing. |
+| `CAPTURE` | Capture a previously authorized amount. |
+| `REFUND` | Return funds to the customer. |
+| `CHARGEBACK` | Record a dispute reversal. |
+| `VOID` | Cancel an authorized or captured transaction. |
+
+Kill Bill stores payment state independently from gateway state. If a gateway call times out, Kill Bill marks the transaction as `UNKNOWN` and retries based on the configured retry schedule (`org.killbill.payment.retry.days`).
+
+</Accordion>
+
+</AccordionGroup>
+
+## Entity relationships
+
+```
+Tenant
+└── Account (currency, time zone, bill cycle day)
+    ├── PaymentMethod (default payment instrument)
+    ├── Bundle (externalKey groups related subscriptions)
+    │   ├── Subscription (base plan)
+    │   └── Subscription (add-on plan)
+    ├── Invoice (generated from subscription events)
+    │   └── InvoiceItem (RECURRING, FIXED, USAGE, ...)
+    └── Payment (collected against an invoice)
+        └── PaymentTransaction (PURCHASE, REFUND, ...)
+```
+
+## Event-driven billing flow
+
+Kill Bill uses an internal persistent event bus. Subscription changes publish events that downstream modules consume asynchronously.
+
+```
+Subscription created / phase change / cancellation
+        ↓
+  SubscriptionEvent published to internal bus
+        ↓
+  Invoice module consumes event
+        ↓
+  Invoice generated (RECURRING / FIXED / REPAIR items)
+        ↓
+  InvoiceCreationEvent published
+        ↓
+  Payment module consumes event
+        ↓
+  Payment attempted via gateway plugin
+        ↓
+  PaymentInfoEvent or PaymentErrorEvent published
+        ↓
+  Overdue module re-evaluates account state
+```
+
+This decoupled design means each module can operate independently. If the payment gateway is temporarily unavailable, Kill Bill retries the payment later without blocking subscription processing.
+
+## Plugin system
+
+Kill Bill is extended through OSGI plugins — bundles that are loaded at startup and can implement well-defined extension points:
+
+| Plugin type | Purpose |
+|-------------|---------|
+| **Payment plugin** | Integrates a payment gateway (Stripe, Braintree, Adyen, etc.). Implements `PaymentPluginApi`. |
+| **Invoice plugin** | Modifies invoice items before commitment — used for tax calculation. |
+| **Catalog plugin** | Provides catalog data from an external source instead of XML. |
+| **Notification plugin** | Receives `ExtBusEvent` notifications to trigger webhooks or analytics pipelines. |
+| **Analytics plugin** | Populates a separate analytics schema for reporting. |
+
+Plugins are deployed to the Kill Bill plugins directory and configured per-tenant using `POST /1.0/kb/tenants/uploadPluginConfig/{pluginName}`. This lets you configure different payment gateway credentials for each tenant on the same Kill Bill instance.
+
+<Tip>
+  The Kill Bill ecosystem includes community plugins for Stripe, Braintree, PayPal, Avalara AvaTax, and more. See the [plugins guide](/guides/plugins) for installation instructions.
+</Tip>
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="Get started" icon="rocket" href="/quickstart">
+    Run your first subscription end-to-end with real API calls.
+  </Card>
+  <Card title="Product catalog" icon="tag" href="/guides/catalog">
+    Model complex pricing structures with phases, add-ons, and price lists.
+  </Card>
+  <Card title="Invoicing" icon="file-invoice" href="/guides/invoicing">
+    Understand how invoices are generated, adjusted, and collected.
+  </Card>
+  <Card title="Payments" icon="credit-card" href="/guides/payments">
+    Connect a gateway plugin and handle payment retries and failures.
+  </Card>
+</Columns>
